@@ -245,6 +245,22 @@ precondition(setCount == 3)
 precondition(NSString(string: "abc").length == 3)
 precondition((NSObject() as AnyHashable) is AnyHashable)
 
+// Cast semantics are Darwin's: a conditional bridge checks every element and
+// every NSNumber's own type/range, and a failed cast is nil - not a truncated
+// value and not a collection with the offending element dropped.
+precondition((([1, "x"] as NSArray) as? [Int]) == nil)
+precondition((([1, 2, 3] as NSArray) as? [Int]) == [1, 2, 3])
+precondition(((["k": "v"] as NSDictionary) as? [String: Int]) == nil)
+precondition((NSSet(array: [1, "x"]) as? Set<Int>) == nil)
+precondition((NSNumber(double: 1.5) as? Int) == nil)
+precondition((NSNumber(integer: 300) as? Int8) == nil)
+precondition((NSNumber(integer: -1) as? UInt) == nil)
+precondition((NSNumber(integer: 2) as? Bool) == nil)
+precondition((NSNumber(integer: 1) as? Bool) == true)
+precondition((NSNumber(unsignedLongLong: UInt64.max) as? UInt) == UInt.max)
+precondition((Int8(3) as NSNumber as? Int8) == 3)
+precondition((Float(1.5) as NSNumber as? Float) == 1.5)
+
 print("bridging: ok")
 EOF
   check "String/Array/Dictionary/Set/NSNumber and Error <-> NSError" \

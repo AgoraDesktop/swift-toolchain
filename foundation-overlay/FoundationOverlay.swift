@@ -124,31 +124,42 @@ extension Array: _ObjectiveCBridgeable {
 
   public static func _forceBridgeFromObjectiveC(_ source: NSArray,
                                                 result: inout Array?) {
-    result = _unconditionallyBridgeFromObjectiveC(source)
+    if !_conditionallyBridgeFromObjectiveC(source, result: &result) {
+      fatalError("Unable to bridge \(type(of: source)) to Array<\(Element.self)>.self")
+    }
   }
 
   @discardableResult
   public static func _conditionallyBridgeFromObjectiveC(_ source: NSArray,
                                                        result: inout Array?) -> Bool {
-    result = _unconditionallyBridgeFromObjectiveC(source)
-    return true
-  }
-
-  public static func _unconditionallyBridgeFromObjectiveC(_ source: NSArray?) -> Array {
-    guard let source else { return [] }
     // Adopt the storage when it is ours: a round trip through
     // `_bridgeToObjectiveC()` is then O(1) in both directions.
     if let adopted = Array._bridgeFromObjectiveCAdoptingNativeStorageOf(source) {
-      return adopted
+      result = adopted
+      return true
     }
     var array: [Element] = []
     let count = source.count
     array.reserveCapacity(count)
     for index in 0..<count {
-      guard let element = source.object(at: index) as? Element else { continue }
+      // One element of the wrong type fails the whole cast, as it does on
+      // Darwin: a conditional bridge that dropped it would silently lose data.
+      guard let element = source.object(at: index) as? Element else {
+        return false
+      }
       array.append(element)
     }
-    return array
+    result = array
+    return true
+  }
+
+  public static func _unconditionallyBridgeFromObjectiveC(_ source: NSArray?) -> Array {
+    guard let source else { return [] }
+    var value: Array?
+    if !_conditionallyBridgeFromObjectiveC(source, result: &value) {
+      fatalError("Unable to bridge \(type(of: source)) to Array<\(Element.self)>.self")
+    }
+    return value!
   }
 }
 
@@ -165,28 +176,37 @@ extension Dictionary: _ObjectiveCBridgeable {
 
   public static func _forceBridgeFromObjectiveC(_ source: NSDictionary,
                                                 result: inout Dictionary?) {
-    result = _unconditionallyBridgeFromObjectiveC(source)
+    if !_conditionallyBridgeFromObjectiveC(source, result: &result) {
+      fatalError("Unable to bridge \(type(of: source)) to Dictionary<\(Key.self), \(Value.self)>.self")
+    }
   }
 
   @discardableResult
   public static func _conditionallyBridgeFromObjectiveC(_ source: NSDictionary,
                                                        result: inout Dictionary?) -> Bool {
-    result = _unconditionallyBridgeFromObjectiveC(source)
+    if let adopted = Dictionary<Key, Value>._bridgeFromObjectiveCAdoptingNativeStorageOf(source) {
+      result = adopted
+      return true
+    }
+    var dictionary: [Key: Value] = [:]
+    for key in source.allKeys {
+      guard let swiftKey = _bridgeKey(key, to: Key.self),
+            let swiftValue = source.object(forKey: key) as? Value else {
+        return false
+      }
+      dictionary[swiftKey] = swiftValue
+    }
+    result = dictionary
     return true
   }
 
   public static func _unconditionallyBridgeFromObjectiveC(_ source: NSDictionary?) -> Dictionary {
     guard let source else { return [:] }
-    if let adopted = Dictionary<Key, Value>._bridgeFromObjectiveCAdoptingNativeStorageOf(source) {
-      return adopted
+    var value: Dictionary?
+    if !_conditionallyBridgeFromObjectiveC(source, result: &value) {
+      fatalError("Unable to bridge \(type(of: source)) to Dictionary<\(Key.self), \(Value.self)>.self")
     }
-    var dictionary: [Key: Value] = [:]
-    for key in source.allKeys {
-      guard let swiftKey = _bridgeKey(key, to: Key.self) else { continue }
-      guard let swiftValue = source.object(forKey: key) as? Value else { continue }
-      dictionary[swiftKey] = swiftValue
-    }
-    return dictionary
+    return value!
   }
 }
 
@@ -204,13 +224,15 @@ private func _bridgeKey<Key>(_ key: Any, to: Key.Type) -> Key? {
   return key as? Key
 }
 
-private func _bridgeAnyHashable(_ value: Any) -> AnyHashable {
+private func _bridgeAnyHashable(_ value: Any) -> AnyHashable? {
   if let string = value as? NSString {
     return AnyHashable(String._unconditionallyBridgeFromObjectiveC(string))
   }
   // Keys of an NSDictionary are objects; `NSObject: Hashable` covers the rest.
   if let object = value as? NSObject { return AnyHashable(object) }
-  return AnyHashable(0)
+  // Not a key any `AnyHashable` can adopt: the caller fails the cast rather
+  // than inventing a value.
+  return nil
 }
 
 extension Set: _ObjectiveCBridgeable {
@@ -223,31 +245,78 @@ extension Set: _ObjectiveCBridgeable {
 
   public static func _forceBridgeFromObjectiveC(_ source: NSSet,
                                                 result: inout Set?) {
-    result = _unconditionallyBridgeFromObjectiveC(source)
+    if !_conditionallyBridgeFromObjectiveC(source, result: &result) {
+      fatalError("Unable to bridge \(type(of: source)) to Set<\(Element.self)>.self")
+    }
   }
 
   @discardableResult
   public static func _conditionallyBridgeFromObjectiveC(_ source: NSSet,
                                                        result: inout Set?) -> Bool {
-    result = _unconditionallyBridgeFromObjectiveC(source)
+    if let adopted = Set<Element>._bridgeFromObjectiveCAdoptingNativeStorageOf(source) {
+      result = adopted
+      return true
+    }
+    var set: Set<Element> = []
+    for object in source.allObjects {
+      guard let element = _bridgeKey(object, to: Element.self) else {
+        return false
+      }
+      set.insert(element)
+    }
+    result = set
     return true
   }
 
   public static func _unconditionallyBridgeFromObjectiveC(_ source: NSSet?) -> Set {
     guard let source else { return [] }
-    if let adopted = Set<Element>._bridgeFromObjectiveCAdoptingNativeStorageOf(source) {
-      return adopted
+    var value: Set?
+    if !_conditionallyBridgeFromObjectiveC(source, result: &value) {
+      fatalError("Unable to bridge \(type(of: source)) to Set<\(Element.self)>.self")
     }
-    var set: Set<Element> = []
-    for object in source.allObjects {
-      guard let element = _bridgeKey(object, to: Element.self) else { continue }
-      set.insert(element)
-    }
-    return set
+    return value!
   }
 }
-
 // MARK: - Numbers
+
+/// The exact value of `source` as `T`, or nil.
+///
+/// `as?` on Darwin is a check, not a conversion: an `NSNumber` that holds a
+/// floating-point value, a boolean, or an integer outside `T`'s range does not
+/// bridge.  The value's *own* encoding picks the signed or unsigned domain, and
+/// the range check is per target type - `-1` is not a `UInt`.
+///
+/// (Agora's `-isEqualToNumber:` deliberately compares across the signed/unsigned
+/// line in the unsigned domain, so `-1` equals `UINT64_MAX`; that is the right
+/// answer for `NSNumber` equality and the wrong one for a bridge, which is why
+/// this does not use it.)
+private func _exactInteger<T: FixedWidthInteger>(
+    _ source: NSNumber, _ type: T.Type
+) -> T? {
+  switch source.objCType.pointee {
+  case 0x43, 0x53, 0x49, 0x4c, 0x51:            // C S I L Q
+    let unsigned = source.unsignedLongLongValue()
+    guard unsigned <= UInt64(T.max) else { return nil }
+    let value = T(unsigned)
+    guard UInt64(value) == unsigned else { return nil }
+    return value
+  case 0x63, 0x73, 0x69, 0x6c, 0x71:            // c s i l q
+    let signed = source.longLongValue()
+    if T.isSigned {
+      guard signed >= Int64(T.min), signed <= Int64(T.max) else { return nil }
+      let value = T(signed)
+      guard Int64(value) == signed else { return nil }
+      return value
+    } else {
+      guard signed >= 0, UInt64(signed) <= UInt64(T.max) else { return nil }
+      let value = T(signed)
+      guard Int64(value) == signed else { return nil }
+      return value
+    }
+  default:
+    return nil                                   // floating point, boolean, ...
+  }
+}
 
 extension Int: _ObjectiveCBridgeable {
   public typealias _ObjectiveCType = NSNumber
@@ -256,19 +325,23 @@ extension Int: _ObjectiveCBridgeable {
 
   public static func _forceBridgeFromObjectiveC(_ source: NSNumber,
                                                 result: inout Int?) {
-    result = source.integerValue()
+    if !_conditionallyBridgeFromObjectiveC(source, result: &result) {
+      fatalError("Unable to bridge \(type(of: source)) to Int.self")
+    }
   }
 
   @discardableResult
   public static func _conditionallyBridgeFromObjectiveC(_ source: NSNumber,
                                                        result: inout Int?) -> Bool {
-    result = source.integerValue()
+    guard let value = _exactInteger(source, Int.self) else { return false }
+    result = value
     return true
   }
 
   public static func _unconditionallyBridgeFromObjectiveC(_ source: NSNumber?) -> Int {
     guard let source else { return 0 }
-    return source.integerValue()
+    guard let value = _exactInteger(source, Int.self) else { return 0 }
+    return value
   }
 }
 
@@ -279,19 +352,23 @@ extension Int8: _ObjectiveCBridgeable {
 
   public static func _forceBridgeFromObjectiveC(_ source: NSNumber,
                                                 result: inout Int8?) {
-    result = source.charValue()
+    if !_conditionallyBridgeFromObjectiveC(source, result: &result) {
+      fatalError("Unable to bridge \(type(of: source)) to Int8.self")
+    }
   }
 
   @discardableResult
   public static func _conditionallyBridgeFromObjectiveC(_ source: NSNumber,
                                                        result: inout Int8?) -> Bool {
-    result = source.charValue()
+    guard let value = _exactInteger(source, Int8.self) else { return false }
+    result = value
     return true
   }
 
   public static func _unconditionallyBridgeFromObjectiveC(_ source: NSNumber?) -> Int8 {
     guard let source else { return 0 }
-    return source.charValue()
+    guard let value = _exactInteger(source, Int8.self) else { return 0 }
+    return value
   }
 }
 
@@ -302,19 +379,23 @@ extension Int16: _ObjectiveCBridgeable {
 
   public static func _forceBridgeFromObjectiveC(_ source: NSNumber,
                                                 result: inout Int16?) {
-    result = source.shortValue()
+    if !_conditionallyBridgeFromObjectiveC(source, result: &result) {
+      fatalError("Unable to bridge \(type(of: source)) to Int16.self")
+    }
   }
 
   @discardableResult
   public static func _conditionallyBridgeFromObjectiveC(_ source: NSNumber,
                                                        result: inout Int16?) -> Bool {
-    result = source.shortValue()
+    guard let value = _exactInteger(source, Int16.self) else { return false }
+    result = value
     return true
   }
 
   public static func _unconditionallyBridgeFromObjectiveC(_ source: NSNumber?) -> Int16 {
     guard let source else { return 0 }
-    return source.shortValue()
+    guard let value = _exactInteger(source, Int16.self) else { return 0 }
+    return value
   }
 }
 
@@ -325,19 +406,23 @@ extension Int32: _ObjectiveCBridgeable {
 
   public static func _forceBridgeFromObjectiveC(_ source: NSNumber,
                                                 result: inout Int32?) {
-    result = source.intValue()
+    if !_conditionallyBridgeFromObjectiveC(source, result: &result) {
+      fatalError("Unable to bridge \(type(of: source)) to Int32.self")
+    }
   }
 
   @discardableResult
   public static func _conditionallyBridgeFromObjectiveC(_ source: NSNumber,
                                                        result: inout Int32?) -> Bool {
-    result = source.intValue()
+    guard let value = _exactInteger(source, Int32.self) else { return false }
+    result = value
     return true
   }
 
   public static func _unconditionallyBridgeFromObjectiveC(_ source: NSNumber?) -> Int32 {
     guard let source else { return 0 }
-    return source.intValue()
+    guard let value = _exactInteger(source, Int32.self) else { return 0 }
+    return value
   }
 }
 
@@ -348,19 +433,23 @@ extension Int64: _ObjectiveCBridgeable {
 
   public static func _forceBridgeFromObjectiveC(_ source: NSNumber,
                                                 result: inout Int64?) {
-    result = source.longLongValue()
+    if !_conditionallyBridgeFromObjectiveC(source, result: &result) {
+      fatalError("Unable to bridge \(type(of: source)) to Int64.self")
+    }
   }
 
   @discardableResult
   public static func _conditionallyBridgeFromObjectiveC(_ source: NSNumber,
                                                        result: inout Int64?) -> Bool {
-    result = source.longLongValue()
+    guard let value = _exactInteger(source, Int64.self) else { return false }
+    result = value
     return true
   }
 
   public static func _unconditionallyBridgeFromObjectiveC(_ source: NSNumber?) -> Int64 {
     guard let source else { return 0 }
-    return source.longLongValue()
+    guard let value = _exactInteger(source, Int64.self) else { return 0 }
+    return value
   }
 }
 
@@ -371,19 +460,23 @@ extension UInt: _ObjectiveCBridgeable {
 
   public static func _forceBridgeFromObjectiveC(_ source: NSNumber,
                                                 result: inout UInt?) {
-    result = source.unsignedIntegerValue()
+    if !_conditionallyBridgeFromObjectiveC(source, result: &result) {
+      fatalError("Unable to bridge \(type(of: source)) to UInt.self")
+    }
   }
 
   @discardableResult
   public static func _conditionallyBridgeFromObjectiveC(_ source: NSNumber,
                                                        result: inout UInt?) -> Bool {
-    result = source.unsignedIntegerValue()
+    guard let value = _exactInteger(source, UInt.self) else { return false }
+    result = value
     return true
   }
 
   public static func _unconditionallyBridgeFromObjectiveC(_ source: NSNumber?) -> UInt {
     guard let source else { return 0 }
-    return source.unsignedIntegerValue()
+    guard let value = _exactInteger(source, UInt.self) else { return 0 }
+    return value
   }
 }
 
@@ -394,19 +487,23 @@ extension UInt8: _ObjectiveCBridgeable {
 
   public static func _forceBridgeFromObjectiveC(_ source: NSNumber,
                                                 result: inout UInt8?) {
-    result = source.unsignedCharValue()
+    if !_conditionallyBridgeFromObjectiveC(source, result: &result) {
+      fatalError("Unable to bridge \(type(of: source)) to UInt8.self")
+    }
   }
 
   @discardableResult
   public static func _conditionallyBridgeFromObjectiveC(_ source: NSNumber,
                                                        result: inout UInt8?) -> Bool {
-    result = source.unsignedCharValue()
+    guard let value = _exactInteger(source, UInt8.self) else { return false }
+    result = value
     return true
   }
 
   public static func _unconditionallyBridgeFromObjectiveC(_ source: NSNumber?) -> UInt8 {
     guard let source else { return 0 }
-    return source.unsignedCharValue()
+    guard let value = _exactInteger(source, UInt8.self) else { return 0 }
+    return value
   }
 }
 
@@ -417,19 +514,23 @@ extension UInt16: _ObjectiveCBridgeable {
 
   public static func _forceBridgeFromObjectiveC(_ source: NSNumber,
                                                 result: inout UInt16?) {
-    result = source.unsignedShortValue()
+    if !_conditionallyBridgeFromObjectiveC(source, result: &result) {
+      fatalError("Unable to bridge \(type(of: source)) to UInt16.self")
+    }
   }
 
   @discardableResult
   public static func _conditionallyBridgeFromObjectiveC(_ source: NSNumber,
                                                        result: inout UInt16?) -> Bool {
-    result = source.unsignedShortValue()
+    guard let value = _exactInteger(source, UInt16.self) else { return false }
+    result = value
     return true
   }
 
   public static func _unconditionallyBridgeFromObjectiveC(_ source: NSNumber?) -> UInt16 {
     guard let source else { return 0 }
-    return source.unsignedShortValue()
+    guard let value = _exactInteger(source, UInt16.self) else { return 0 }
+    return value
   }
 }
 
@@ -440,19 +541,23 @@ extension UInt32: _ObjectiveCBridgeable {
 
   public static func _forceBridgeFromObjectiveC(_ source: NSNumber,
                                                 result: inout UInt32?) {
-    result = source.unsignedIntValue()
+    if !_conditionallyBridgeFromObjectiveC(source, result: &result) {
+      fatalError("Unable to bridge \(type(of: source)) to UInt32.self")
+    }
   }
 
   @discardableResult
   public static func _conditionallyBridgeFromObjectiveC(_ source: NSNumber,
                                                        result: inout UInt32?) -> Bool {
-    result = source.unsignedIntValue()
+    guard let value = _exactInteger(source, UInt32.self) else { return false }
+    result = value
     return true
   }
 
   public static func _unconditionallyBridgeFromObjectiveC(_ source: NSNumber?) -> UInt32 {
     guard let source else { return 0 }
-    return source.unsignedIntValue()
+    guard let value = _exactInteger(source, UInt32.self) else { return 0 }
+    return value
   }
 }
 
@@ -463,19 +568,23 @@ extension UInt64: _ObjectiveCBridgeable {
 
   public static func _forceBridgeFromObjectiveC(_ source: NSNumber,
                                                 result: inout UInt64?) {
-    result = source.unsignedLongLongValue()
+    if !_conditionallyBridgeFromObjectiveC(source, result: &result) {
+      fatalError("Unable to bridge \(type(of: source)) to UInt64.self")
+    }
   }
 
   @discardableResult
   public static func _conditionallyBridgeFromObjectiveC(_ source: NSNumber,
                                                        result: inout UInt64?) -> Bool {
-    result = source.unsignedLongLongValue()
+    guard let value = _exactInteger(source, UInt64.self) else { return false }
+    result = value
     return true
   }
 
   public static func _unconditionallyBridgeFromObjectiveC(_ source: NSNumber?) -> UInt64 {
     guard let source else { return 0 }
-    return source.unsignedLongLongValue()
+    guard let value = _exactInteger(source, UInt64.self) else { return 0 }
+    return value
   }
 }
 
@@ -486,19 +595,35 @@ extension Float: _ObjectiveCBridgeable {
 
   public static func _forceBridgeFromObjectiveC(_ source: NSNumber,
                                                 result: inout Float?) {
-    result = source.floatValue()
+    if !_conditionallyBridgeFromObjectiveC(source, result: &result) {
+      fatalError("Unable to bridge \(type(of: source)) to Float.self")
+    }
   }
 
   @discardableResult
   public static func _conditionallyBridgeFromObjectiveC(_ source: NSNumber,
                                                        result: inout Float?) -> Bool {
-    result = source.floatValue()
+    // An NSNumber keeps its own type; a Double that does not fit a Float
+    // exactly does not bridge, and an integer is converted exactly.
+    let type = source.objCType.pointee
+    let value: Float?
+    if type == 0x49 || type == 0x4c || type == 0x51 {          // I, L, Q
+      value = Float(exactly: source.unsignedLongLongValue())
+    } else if type == 0x69 || type == 0x6c || type == 0x71 {    // i, l, q
+      value = Float(exactly: source.longLongValue())
+    } else {
+      value = Float(exactly: source.doubleValue())
+    }
+    guard let value else { return false }
+    result = value
     return true
   }
 
   public static func _unconditionallyBridgeFromObjectiveC(_ source: NSNumber?) -> Float {
     guard let source else { return 0 }
-    return source.floatValue()
+    var value: Float?
+    guard _conditionallyBridgeFromObjectiveC(source, result: &value) else { return 0 }
+    return value!
   }
 }
 
@@ -509,19 +634,33 @@ extension Double: _ObjectiveCBridgeable {
 
   public static func _forceBridgeFromObjectiveC(_ source: NSNumber,
                                                 result: inout Double?) {
-    result = source.doubleValue()
+    if !_conditionallyBridgeFromObjectiveC(source, result: &result) {
+      fatalError("Unable to bridge \(type(of: source)) to Double.self")
+    }
   }
 
   @discardableResult
   public static func _conditionallyBridgeFromObjectiveC(_ source: NSNumber,
                                                        result: inout Double?) -> Bool {
-    result = source.doubleValue()
+    let type = source.objCType.pointee
+    let value: Double?
+    if type == 0x51 {                                          // Q
+      value = Double(exactly: source.unsignedLongLongValue())
+    } else if type == 0x71 {                                   // q
+      value = Double(exactly: source.longLongValue())
+    } else {
+      value = Double(exactly: source.doubleValue())
+    }
+    guard let value else { return false }
+    result = value
     return true
   }
 
   public static func _unconditionallyBridgeFromObjectiveC(_ source: NSNumber?) -> Double {
     guard let source else { return 0 }
-    return source.doubleValue()
+    var value: Double?
+    guard _conditionallyBridgeFromObjectiveC(source, result: &value) else { return 0 }
+    return value!
   }
 }
 
@@ -532,19 +671,32 @@ extension Bool: _ObjectiveCBridgeable {
 
   public static func _forceBridgeFromObjectiveC(_ source: NSNumber,
                                                 result: inout Bool?) {
-    result = source.boolValue()
+    if !_conditionallyBridgeFromObjectiveC(source, result: &result) {
+      fatalError("Unable to bridge \(type(of: source)) to Bool.self")
+    }
   }
 
   @discardableResult
   public static func _conditionallyBridgeFromObjectiveC(_ source: NSNumber,
                                                        result: inout Bool?) -> Bool {
-    result = source.boolValue()
-    return true
+    // Only a boolean NSNumber (or its numeric 0/1 spelling) is a Bool; the
+    // number 2 is not a Bool, exactly as on Darwin.
+    if source.boolValue() && NSNumber(integer: 1) == source {
+      result = true
+      return true
+    }
+    if !source.boolValue() && NSNumber(integer: 0) == source {
+      result = false
+      return true
+    }
+    return false
   }
 
   public static func _unconditionallyBridgeFromObjectiveC(_ source: NSNumber?) -> Bool {
     guard let source else { return false }
-    return source.boolValue()
+    var value: Bool?
+    guard _conditionallyBridgeFromObjectiveC(source, result: &value) else { return false }
+    return value!
   }
 }
 
