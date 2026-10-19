@@ -1,0 +1,88 @@
+diff --git a/NSArray.h b/NSArray.h
+index 2509ec9..2831ee8 100644
+--- a/NSArray.h
++++ b/NSArray.h
+@@ -74,6 +74,16 @@ NS_ASSUME_NONNULL_BEGIN
+  * NSArray, so no private name can reach an archive.
+  * =================================================================================================== */
+ 
++/* SWIFT SPELLS THIS CLASS `[Any]` (`swift_bridge`; §2.19 of
++ * SWIFT-PORT-HANDOFF.md). `NSArray *` in an imported signature becomes a Swift
++ * `Array`, and the overlay's `Array: _ObjectiveCBridgeable` puts an `NSArray *`
++ * back on the wire, so `-arrayByAddingObject:` takes an array and answers one
++ * while Objective-C keeps the selectors it had.
++ *
++ * The element type is `Any` because the class is unparameterized here; a
++ * parameterized `NSArray<NSString *> *` imports as `[String]`. The mutable
++ * classes are NOT bridged - a `NSMutableArray *` stays the class. */
++__attribute__((swift_bridge("Swift.Array")))
+ @interface NSArray<__covariant ObjectType> : NSObject <NSCopying, NSFastEnumeration, NSCoding>
+ {
+ 	id __unsafe_unretained *_items;	/* owned BY HAND: every slot is retained */
+diff --git a/NSDictionary.h b/NSDictionary.h
+index 5e303ac..23b3027 100644
+--- a/NSDictionary.h
++++ b/NSDictionary.h
+@@ -70,6 +70,19 @@ struct FNDictEntry;			/* opaque; defined in NSDictionary.m */
+  * private name can reach an archive.
+  * =================================================================================================== */
+ 
++/* SWIFT SPELLS THIS CLASS `[AnyHashable: Any]` (`swift_bridge`; §2.19 of
++ * SWIFT-PORT-HANDOFF.md). `NSDictionary *` in an imported signature becomes a
++ * Swift `Dictionary`, and the overlay's `Dictionary: _ObjectiveCBridgeable`
++ * puts an `NSDictionary *` back on the wire. The key type comes from the
++ * declaration: this class's type parameters are unconstrained, so the key is
++ * `AnyHashable` (the importer's fallback for a non-Hashable key) and the value
++ * is `Any`; `NSDictionary<NSString *, NSNumber *> *` imports as
++ * `[String: NSNumber]`.
++ *
++ * The bridge needs `AnyHashable: _ObjectiveCBridgeable`, which the Foundation
++ * overlay provides; without it the importer keeps the Objective-C class. The
++ * mutable class is NOT bridged - a `NSMutableDictionary *` stays the class. */
++__attribute__((swift_bridge("Swift.Dictionary")))
+ @interface NSDictionary<__covariant KeyType, __covariant ObjectType> : NSObject <NSCopying, NSFastEnumeration, NSCoding>
+ {
+ 	struct FNDictEntry **_buckets;	/* power-of-two count, so index = hash & (count-1) */
+diff --git a/NSSet.h b/NSSet.h
+index 12e4bcc..1ba27d8 100644
+--- a/NSSet.h
++++ b/NSSet.h
+@@ -45,6 +45,15 @@
+ 
+ NS_ASSUME_NONNULL_BEGIN
+ 
++/* SWIFT SPELLS THIS CLASS `Set<AnyHashable>` (`swift_bridge`; §2.19 of
++ * SWIFT-PORT-HANDOFF.md). `NSSet *` in an imported signature becomes a Swift
++ * `Set`, and the overlay's `Set: _ObjectiveCBridgeable` puts an `NSSet *` back
++ * on the wire. The element is `AnyHashable` for the same reason a dictionary
++ * key is (this class's type parameter is unconstrained); an explicit
++ * `NSSet<NSString *> *` imports as `Set<String>`.
++ *
++ * The mutable class is NOT bridged - a `NSMutableSet *` stays the class. */
++__attribute__((swift_bridge("Swift.Set")))
+ @interface NSSet<__covariant ObjectType> : NSObject <NSCopying, NSMutableCopying, NSFastEnumeration, NSCoding>
+ {
+ 	NSArray *_members;		/* the members, once each; REPLACED by every mutation */
+diff --git a/NSString.h b/NSString.h
+index d5ade40..26eb5ca 100644
+--- a/NSString.h
++++ b/NSString.h
+@@ -219,6 +219,18 @@ typedef enum {
+  * the PUBLIC class, so a literal archives as NSString rather than as the compiler's class.
+  * =================================================================================================== */
+ 
++/* SWIFT SPELLS THIS CLASS `String` (Swift's `swift_bridge` attribute; §2.19 of
++ * SWIFT-PORT-HANDOFF.md). The attribute makes every `NSString *` in an imported
++ * signature a Swift `String`, and Swift's Foundation overlay supplies the
++ * `_ObjectiveCBridgeable` conformance that lets the compiler put an `NSString *`
++ * back on the wire at the boundary: `-appendString:` takes a `String`, `-substringFromIndex:`
++ * answers one, and Objective-C still sees the same selectors and the same ABI.
++ *
++ * It must stay on a class whose bridge *exists*: the importer only rewrites the
++ * signature when the Swift type can be converted back (see
++ * `canBridgeBackToObjectiveC` in the fork's ImportType.cpp), so without the
++ * overlay this line is inert rather than wrong. */
++__attribute__((swift_bridge("Swift.String")))
+ @interface NSString : NSObject <NSCopying, NSCoding>
+ 
+ /* THE NSCoding DOORS (§63.22). THE WIRE IS OURS: Apple's spelling for this class's coded form is not published

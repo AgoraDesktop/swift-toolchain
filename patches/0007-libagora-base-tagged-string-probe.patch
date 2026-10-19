@@ -1,0 +1,44 @@
+diff --git a/NSString.m b/NSString.m
+index 584561b..83c4957 100644
+--- a/NSString.m
++++ b/NSString.m
+@@ -1145,6 +1145,39 @@ static NSString *fn_string_from_bytes(const void *bytes, size_t n, NSStringEncod
+ 
+ @implementation NSString
+ 
++/* THE SWIFT STANDARD LIBRARY'S TAGGED-STRING PROBE (a Darwin/CoreFoundation SPI).
++ *
++ * Before it creates a Swift-native NSString (a __StringStorage reparented under
++ * this class), the standard library sends this to the class object: on Darwin a
++ * tagged-pointer NSString is the fast path, and nil means "no tagged
++ * representation, build the storage object instead". This library has no tagged
++ * string representation, so nil is the correct answer - but it has to be
++ * *answered*, because an unimplemented class method reaches
++ * -doesNotRecognizeSelector: and raises. The arguments are ignored.
++ *
++ * The selector is sent by String._bridgeToObjectiveCImpl() (StringBridge.swift),
++ * which the Swift runtime also uses to turn a thrown Error's domain into an
++ * NSString; without this the error -> NSError bridge aborts. */
+++ (id)newTaggedNSStringWithASCIIBytes_:(const uint8_t *)bytes length_:(NSInteger)count
++{
++	(void)bytes;
++	(void)count;
++	return nil;
++}
++
++/* THE SWIFT STANDARD LIBRARY'S "IS THIS AN NSString?" PROBE (CoreFoundation's -isNSString__).
++ *
++ * When a __StringStorage is compared with, or asked to -compare:..., against an Objective-C string,
++ * StringStorageBridge.swift first sends this selector to the OTHER object (StringBridge.swift's
++ * _isNSString). On Darwin every CoreFoundation string answers YES and every non-string answers NO; here
++ * every NSString does, and an object that is not one never reaches this implementation. Answering is the
++ * point: an unimplemented selector raises, so `swiftString == objectiveCString` aborted instead of
++ * comparing. */
++- (BOOL)isNSString__
++{
++	return YES;
++}
++
+ /* UNICODE NORMALIZATION (§63.24). THE FOUR ARE TWO AXES — canonical vs COMPATIBILITY (which also folds the
+  * ligatures and the like) and composed vs DECOMPOSED — and each door is one line over the engine above. */
+ - (NSString *)precomposedStringWithCanonicalMapping

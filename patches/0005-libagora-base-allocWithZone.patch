@@ -1,0 +1,67 @@
+diff --git a/NSObject.h b/NSObject.h
+index cdffb4a..5c5f8b2 100644
+--- a/NSObject.h
++++ b/NSObject.h
+@@ -134,6 +134,15 @@ __attribute__((objc_root_class))
+  * +0), so they keep those names whatever the class is called.
+  */
+ + (id)alloc;
++/* THE COMPATIBILITY DOOR (2026-10-17, user decision). Zones do not exist on
++ * this runtime, but `+allocWithZone:` is the door the Objective-C *allocator*
++ * uses: libobjc2's objc_allocWithZone() sends it, and Swift's
++ * `__allocating_init` — which every `T()` on an imported class goes through —
++ * reaches the runtime that way. Without this selector `NSObject()` raises
++ * `NSInvalidArgumentException`. It is `+alloc` with the reading stated, so a
++ * subclass that overrides `+alloc` still answers its shared instance (NSNull
++ * does). Same shape as NSProxy's deprecated door (§63.205). */
+++ (id)allocWithZone:(nullable struct _NSZone *)zone;
+ + (id)new;
+ - (id)init;
+ 
+@@ -226,10 +235,18 @@ __attribute__((objc_root_class))
+ + (BOOL)instancesRespondToSelector:(SEL)aSelector;
+ + (void)load;			/* the runtime calls these; declared so overrides match */
+ + (void)initialize;
+-/* NO +allocWithZone: (2026-09-18): it takes an `NSZone`, and every zone-taking
+- * method is removed. THE SINGLETON DOOR IS +alloc — override THAT to answer a
+- * shared instance (see NSObject.m for the measurement that makes the direction
+- * matter). */
++/* THE COMPATIBILITY DOOR (2026-10-17, user decision). The zone-taking API is
++ * gone and no `NSZone` type exists, but the *selector* is not optional: the
++ * Objective-C allocator sends it. libobjc2's objc_allocWithZone() reaches it,
++ * and Swift's `__allocating_init` — every `T()` on an imported class — goes
++ * through that. Without it, `NSObject()` raises NSInvalidArgumentException.
++ * It takes a `void *` it ignores and forwards to `+alloc`, so THE SINGLETON
++ * DOOR STAYS +alloc: a subclass that overrides +alloc still answers its shared
++ * instance (NSNull does). Same shape as NSProxy's deprecated door (§63.205).
++ * The parameter is spelled `struct _NSZone *` only so its type encoding
++ * matches the one the runtime's own allocator declaration registers
++ * (libagora-objc/fast_paths.m); the struct is opaque, never dereferenced, and
++ * no `NSZone` type is added to the SDK. */
+ 
+ - (BOOL)isProxy;
+ /* NO -zone EITHER (2026-09-18, the user closing the last gap: "any method which
+diff --git a/NSObject.m b/NSObject.m
+index 3a6e7dc..8c43791 100644
+--- a/NSObject.m
++++ b/NSObject.m
+@@ -58,6 +58,19 @@ FNObjectDeathHook fn_object_death_hook = NULL;
+ 	return [[self alloc] init];
+ }
+ 
+++ (id)allocWithZone:(struct _NSZone *)zone
++{
++	/* THE COMPATIBILITY DOOR (2026-10-17, user decision). Zones do not exist on this runtime, but
++	 * `+allocWithZone:` is the selector the Objective-C *allocator* sends: libobjc2's
++	 * objc_allocWithZone() reaches it, and Swift's `__allocating_init` (every `T()` on an imported
++	 * class) goes through that. Without it, `NSObject()` raises NSInvalidArgumentException.
++	 * Routing it through +alloc leaves the singleton door exactly where it is: a subclass that
++	 * overrides +alloc still answers its shared instance (NSNull does). Same shape as NSProxy's
++	 * deprecated door.  The parameter type matches the runtime's selector encoding. */
++	(void)zone;
++	return [self alloc];
++}
++
+ - (id)init
+ {
+ 	return self;

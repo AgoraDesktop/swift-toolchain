@@ -1,0 +1,20 @@
+diff --git a/arc.mm b/arc.mm
+index 20ccaf6..9e03283 100644
+--- a/arc.mm
++++ b/arc.mm
+@@ -453,6 +453,15 @@ static inline void initAutorelease(void)
+ static inline id autorelease(id obj)
+ {
+ 	//fprintf(stderr, "Autoreleasing %p\n", obj);
++	// The pool implementation has to be chosen before the first object is
++	// autoreleased.  `useARCAutoreleasePool` is zero-initialised, so without
++	// this the first autorelease takes the manual path below - a
++	// `-autorelease` send - and a Swift object at the GNUstep class layout has
++	// no Objective-C -autorelease of its own: it inherits NSObject's, which
++	// calls objc_autorelease(), which lands here again.  Swift's enumerators
++	// (e.g. `_SwiftDictionaryNSEnumerator`, returned by `-keyEnumerator`) hit
++	// exactly that and overflowed the stack.  initAutorelease() is idempotent.
++	initAutorelease();
+ 	if (useARCAutoreleasePool)
+ 	{
+ 		struct arc_tls *tls = getARCThreadData();

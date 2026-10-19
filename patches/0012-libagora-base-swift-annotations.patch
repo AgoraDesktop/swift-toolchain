@@ -1,0 +1,97 @@
+diff --git a/NSNotification.h b/NSNotification.h
+index 58eb3ef..dcee840 100644
+--- a/NSNotification.h
++++ b/NSNotification.h
+@@ -39,6 +39,10 @@ NS_ASSUME_NONNULL_BEGIN
+  * unconditionally - and the rest of the contract has nothing to constrain.
+  * =================================================================================================== */
+ 
++/* APPLE'S TYPE FOR A NOTIFICATION NAME, declared beside the names that are spelled with it. It is a typedef
++ * with no behaviour - the type Apple declares for the same constants. */
++typedef NSString *NSNotificationName NS_TYPED_EXTENSIBLE_ENUM;
++
+ @interface NSNotification : NSObject <NSCopying, NSCoding>
+ {
+ 	NSString *_name;
+@@ -66,20 +70,16 @@ NS_ASSUME_NONNULL_BEGIN
+  * (they are values the poster must not be able to change underneath the observers) and the object is
+  * retained, because the object is the sender's statement of identity for as long as the notification
+  * lives — which, for a posted one, is the delivery. */
+-- (instancetype)initWithName:(NSString *)name
++- (instancetype)initWithName:(NSNotificationName)name
+ 		      object:(nullable id)object
+ 		    userInfo:(nullable NSDictionary *)userInfo;
+ 
+-@property (readonly, copy) NSString *name;
++@property (readonly, copy) NSNotificationName name;
+ @property (readonly, nullable) id object;
+ @property (readonly, copy, nullable) NSDictionary *userInfo;
+ 
+ @end
+ 
+-/* APPLE'S TYPE FOR A NOTIFICATION NAME, declared beside the names that are spelled with it. It is a typedef
+- * with no behaviour - the type Apple declares for the same constants. */
+-typedef NSString *NSNotificationName;
+-
+ /* ---- THE NAMES OF NOTIFICATIONS THIS SYSTEM DOES NOT POST (the coverage slice) ----------------------
+  *
+  * ONE DELIBERATE SIMPLIFICATION, stated because it is a deviation: in Apple's headers these values are the
+diff --git a/NSNull.h b/NSNull.h
+index debffa5..4458ba8 100644
+--- a/NSNull.h
++++ b/NSNull.h
+@@ -25,6 +25,7 @@
+ 
+ NS_ASSUME_NONNULL_BEGIN
+ 
++NS_SWIFT_SENDABLE
+ @interface NSNull : NSObject <NSCopying>
+ 
+ + (NSNull *)null;
+diff --git a/NSObjCRuntime.h b/NSObjCRuntime.h
+index c5561ed..5ad3111 100644
+--- a/NSObjCRuntime.h
++++ b/NSObjCRuntime.h
+@@ -185,11 +185,25 @@ typedef enum {
+ #define NS_OPTIONS(_type, _name)	enum _name : _type _name; enum _name : _type
+ #define NS_CLOSED_ENUM(_type, _name)	enum _name : _type _name; enum _name : _type
+ #define NS_ERROR_ENUM(_type, _name)	enum _name : _type _name; enum _name : _type
+-/* typed/extensible string enums: documented bare names */
+-#define NS_TYPED_ENUM
+-#define NS_STRING_ENUM
+-#define NS_EXTENSIBLE_STRING_ENUM
+-#define NS_TYPED_EXTENSIBLE_ENUM
++/* typed/extensible string enums.  Apple documents the bare names and their
++ * EFFECT (a `NSString *` typedef that Swift sees as a struct wrapper with a
++ * `rawValue`); the effect is carried by clang's `swift_wrapper` attribute, which
++ * is what Darwin's SDK expands these to. */
++#define NS_TYPED_ENUM			__attribute__((swift_wrapper(struct)))
++#define NS_STRING_ENUM			__attribute__((swift_wrapper(struct)))
++#define NS_EXTENSIBLE_STRING_ENUM	__attribute__((swift_wrapper(struct)))
++#define NS_TYPED_EXTENSIBLE_ENUM	__attribute__((swift_wrapper(struct)))
++
++/* Swift-side naming and behaviour attributes (Darwin's NS_SWIFT_NAME,
++ * NS_REFINED_FOR_SWIFT and NS_SWIFT_SENDABLE).  Each is a clang attribute the
++ * Swift importer reads; without them the importer's heuristics decide the Swift
++ * name, and a class that is safe to send across concurrency domains has no
++ * `Sendable` conformance at all. */
++#define NS_SWIFT_NAME(_name)		__attribute__((swift_name(#_name)))
++#define NS_REFINED_FOR_SWIFT		__attribute__((swift_private))
++#define NS_SWIFT_SENDABLE		__attribute__((swift_attr("@Sendable")))
++#define NS_SWIFT_NONISOLATED		__attribute__((swift_attr("@nonisolated")))
++#define NS_SWIFT_UI_ACTOR		__attribute__((swift_attr("@MainActor")))
+ 
+ /* --- the symbols a shared library exports --- */
+ #define FOUNDATION_EXPORT		extern
+diff --git a/NSUUID.h b/NSUUID.h
+index a24aa63..bdecfcd 100644
+--- a/NSUUID.h
++++ b/NSUUID.h
+@@ -23,6 +23,7 @@
+ 
+ NS_ASSUME_NONNULL_BEGIN
+ 
++NS_SWIFT_SENDABLE
+ @interface NSUUID : NSObject <NSCopying>
+ {
+ 	unsigned char _bytes[16];	/* in the order the string form prints them */

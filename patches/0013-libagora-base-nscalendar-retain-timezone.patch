@@ -1,0 +1,35 @@
+diff --git a/NSCalendar.m b/NSCalendar.m
+index 4847c35..d67e150 100644
+--- a/NSCalendar.m
++++ b/NSCalendar.m
+@@ -38,6 +38,7 @@
+ #import <Foundation/NSString.h>
+ #import <Foundation/NSArray.h>
+ #import <Foundation/NSNumber.h>
++#include <objc/objc-arc.h>	/* objc_retain: the calendar keeps the zone it is given */
+ #import <Foundation/NSLocale.h>
+ #import <Foundation/NSException.h>
+ 
+@@ -306,7 +307,7 @@ NSCalendarIdentifier const NSCalendarIdentifierVikram = @"vikram";
+ 	_identifier = [identifier copy];
+ 	/* THE SYSTEM ZONE, not a hard-coded UTC: with F13.7a's database the honest default is the one
+ 	 * the system reports (ICU's default, which follows TZ). */
+-	_timeZone = [NSTimeZone systemTimeZone];
++	_timeZone = objc_retain([NSTimeZone systemTimeZone]);
+ 	_firstWeekday = 1;			/* Sunday, Cocoa's default for a new calendar */
+ 	_minimumDaysInFirstWeek = 1;
+ 	return self;
+@@ -323,7 +324,12 @@ NSCalendarIdentifier const NSCalendarIdentifierVikram = @"vikram";
+ 		[NSException raise:NSInvalidArgumentException
+ 			    format:@"-setTimeZone: needs a time zone; a calendar always has one"];
+ 	}
+-	_timeZone = zone;
++	/* RETAINED, not assigned.  The zone usually comes from an expression the
++	 * caller does not keep (`Calendar(identifier:).timeZone = TimeZone(...)`),
++	 * and a calendar that only borrowed it read freed memory on the next
++	 * `-startOfDayForDate:`.  This class has no -dealloc, so the calendar keeps
++	 * the zones it was given. */
++	_timeZone = objc_retain(zone);
+ }
+ 
+ - (NSUInteger)firstWeekday { return _firstWeekday; }

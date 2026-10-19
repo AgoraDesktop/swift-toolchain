@@ -1,0 +1,386 @@
+diff --git a/NSArray.h b/NSArray.h
+index 2099cdb..2831ee8 100644
+--- a/NSArray.h
++++ b/NSArray.h
+@@ -74,6 +74,16 @@ NS_ASSUME_NONNULL_BEGIN
+  * NSArray, so no private name can reach an archive.
+  * =================================================================================================== */
+ 
++/* SWIFT SPELLS THIS CLASS `[Any]` (`swift_bridge`; §2.19 of
++ * SWIFT-PORT-HANDOFF.md). `NSArray *` in an imported signature becomes a Swift
++ * `Array`, and the overlay's `Array: _ObjectiveCBridgeable` puts an `NSArray *`
++ * back on the wire, so `-arrayByAddingObject:` takes an array and answers one
++ * while Objective-C keeps the selectors it had.
++ *
++ * The element type is `Any` because the class is unparameterized here; a
++ * parameterized `NSArray<NSString *> *` imports as `[String]`. The mutable
++ * classes are NOT bridged - a `NSMutableArray *` stays the class. */
++__attribute__((swift_bridge("Swift.Array")))
+ @interface NSArray<__covariant ObjectType> : NSObject <NSCopying, NSFastEnumeration, NSCoding>
+ {
+ 	id __unsafe_unretained *_items;	/* owned BY HAND: every slot is retained */
+@@ -105,13 +115,13 @@ NS_ASSUME_NONNULL_BEGIN
+ - (instancetype)initWithArray:(NSArray<ObjectType> *)array copyItems:(BOOL)flag;
+ - (id)initWithObjects:(ObjectType)firstObject, ... NS_REQUIRES_NIL_TERMINATION;
+ 
+-- (NSUInteger)count;
++@property (readonly) NSUInteger count;
+ - (ObjectType)objectAtIndex:(NSUInteger)index;
+ /* Cocoa's subscript: `array[0]` lowers to this. */
+ - (ObjectType)objectAtIndexedSubscript:(NSUInteger)index;
+ 
+-- (nullable ObjectType)firstObject;
+-- (nullable ObjectType)lastObject;
++@property (nullable, readonly) ObjectType firstObject;
++@property (nullable, readonly) ObjectType lastObject;
+ /* NSNotFound for a missing element — NOT (NSUInteger)-1, which is what this
+  * answered before the audit and which never equals NSNotFound. */
+ - (NSUInteger)indexOfObject:(ObjectType)object;
+diff --git a/NSData.h b/NSData.h
+index ab251ba..c851b5b 100644
+--- a/NSData.h
++++ b/NSData.h
+@@ -185,8 +185,8 @@ enum {
+ 			  options:(NSDataBase64DecodingOptions)options;
+ - (nullable id)initWithBase64EncodedData:(NSData *)base64Data options:(NSDataBase64DecodingOptions)options;
+ 
+-- (size_t)length;
+-- (nullable const void *)bytes;
++@property (readonly) size_t length;
++@property (nullable, readonly) const void *bytes;
+ - (void)getBytes:(void *)buffer length:(size_t)length;
+ - (void)getBytes:(void *)buffer range:(NSRange)range;
+ 
+diff --git a/NSDate.h b/NSDate.h
+index bf1762c..ef4985c 100644
+--- a/NSDate.h
++++ b/NSDate.h
+@@ -69,7 +69,7 @@ NS_ASSUME_NONNULL_BEGIN
+ 
+ - (double)timeIntervalSince1970;
+ - (double)timeIntervalSinceNow;
+-- (double)timeIntervalSinceReferenceDate;
++@property (readonly) NSTimeInterval timeIntervalSinceReferenceDate;
+ - (double)timeIntervalSinceDate:(NSDate *)other;
+ - (NSDate *)dateByAddingTimeInterval:(double)seconds;
+ - (NSString *)descriptionWithLocale:(nullable id)locale;
+diff --git a/NSDecimalNumber.h b/NSDecimalNumber.h
+index 585a6e0..6466661 100644
+--- a/NSDecimalNumber.h
++++ b/NSDecimalNumber.h
+@@ -87,7 +87,7 @@ extern NSString * const NSDecimalNumberDivideByZeroException;
+ 
+ /* ACCESSORS. The scalar ones convert, and the conversion rule is documented in the implementation. */
+ - (NSDecimal)decimalValue;
+-- (const char *)objCType;
++@property (readonly) const char *objCType;
+ - (NSString *)stringValue;
+ - (NSString *)descriptionWithLocale:(nullable id)locale;
+ 
+diff --git a/NSDictionary.h b/NSDictionary.h
+index 411c1be..23b3027 100644
+--- a/NSDictionary.h
++++ b/NSDictionary.h
+@@ -70,6 +70,19 @@ struct FNDictEntry;			/* opaque; defined in NSDictionary.m */
+  * private name can reach an archive.
+  * =================================================================================================== */
+ 
++/* SWIFT SPELLS THIS CLASS `[AnyHashable: Any]` (`swift_bridge`; §2.19 of
++ * SWIFT-PORT-HANDOFF.md). `NSDictionary *` in an imported signature becomes a
++ * Swift `Dictionary`, and the overlay's `Dictionary: _ObjectiveCBridgeable`
++ * puts an `NSDictionary *` back on the wire. The key type comes from the
++ * declaration: this class's type parameters are unconstrained, so the key is
++ * `AnyHashable` (the importer's fallback for a non-Hashable key) and the value
++ * is `Any`; `NSDictionary<NSString *, NSNumber *> *` imports as
++ * `[String: NSNumber]`.
++ *
++ * The bridge needs `AnyHashable: _ObjectiveCBridgeable`, which the Foundation
++ * overlay provides; without it the importer keeps the Objective-C class. The
++ * mutable class is NOT bridged - a `NSMutableDictionary *` stays the class. */
++__attribute__((swift_bridge("Swift.Dictionary")))
+ @interface NSDictionary<__covariant KeyType, __covariant ObjectType> : NSObject <NSCopying, NSFastEnumeration, NSCoding>
+ {
+ 	struct FNDictEntry **_buckets;	/* power-of-two count, so index = hash & (count-1) */
+@@ -108,10 +121,10 @@ struct FNDictEntry;			/* opaque; defined in NSDictionary.m */
+ 		count:(NSUInteger)count;
+ - (id)initWithObjectsAndKeys:(id)firstObject, ... NS_REQUIRES_NIL_TERMINATION;
+ 
+-- (NSUInteger)count;
++@property (readonly) NSUInteger count;
+ - (nullable ObjectType)objectForKey:(KeyType)key;
+-- (NSArray<KeyType> *)allKeys;
+-- (NSArray<ObjectType> *)allValues;
++@property (readonly, copy) NSArray<KeyType> *allKeys;
++@property (readonly, copy) NSArray<ObjectType> *allValues;
+ - (NSArray<KeyType> *)allKeysForObject:(ObjectType)object;
+ - (NSArray<ObjectType> *)objectsForKeys:(NSArray<KeyType> *)keys notFoundMarker:(ObjectType)marker;
+ - (NSArray<KeyType> *)keysSortedByValueUsingSelector:(SEL)comparator;
+diff --git a/NSError.h b/NSError.h
+index 5e0bb3e..6071a3f 100644
+--- a/NSError.h
++++ b/NSError.h
+@@ -87,12 +87,12 @@ extern NSInteger const NSFileProviderErrorDeletionRejected;
+ 		code:(NSInteger)code
+ 	    userInfo:(nullable NSDictionary *)userInfo;
+ 
+-- (NSErrorDomain)domain;
+-- (NSInteger)code;
+-- (nullable NSDictionary *)userInfo;
++@property (readonly, copy) NSErrorDomain domain;
++@property (readonly) NSInteger code;
++@property (nullable, readonly, copy) NSDictionary *userInfo;
+ 
+-- (NSString *)localizedDescription;
+-- (nullable NSString *)localizedFailureReason;
++@property (readonly, copy) NSString *localizedDescription;
++@property (nullable, readonly, copy) NSString *localizedFailureReason;
+ 
+ /* THE FIVE READERS THAT COME OUT OF userInfo, WITH APPLE'S KEYS — and every one of them asks a DOMAIN'S
+  * PROVIDER when the dictionary does not carry the value (see the two class doors below), because that is
+diff --git a/NSException.h b/NSException.h
+index a17071e..438106d 100644
+--- a/NSException.h
++++ b/NSException.h
+@@ -83,7 +83,7 @@ extern NSString *const NSMallocException;
+ 
+ - (NSString *)name;
+ - (nullable NSString *)reason;
+-- (nullable NSDictionary *)userInfo;
++@property (nullable, readonly, copy) NSDictionary *userInfo;
+ 
+ - (void)raise;
+ 
+diff --git a/NSHashTable.h b/NSHashTable.h
+index 25c2dd6..67bedb2 100644
+--- a/NSHashTable.h
++++ b/NSHashTable.h
+@@ -77,9 +77,9 @@ typedef NSPointerFunctionsOptions NSHashTableOptions;
+ 
+ - (NSPointerFunctions *)pointerFunctions;
+ 
+-- (NSUInteger)count;
++@property (readonly) NSUInteger count;
+ - (nullable ObjectType)anyObject;
+-- (NSArray<ObjectType> *)allObjects;
++@property (readonly, copy) NSArray<ObjectType> *allObjects;
+ - (NSSet<ObjectType> *)setRepresentation;
+ - (BOOL)containsObject:(nullable ObjectType)anObject;
+ - (nullable ObjectType)member:(nullable ObjectType)object;
+diff --git a/NSIndexPath.h b/NSIndexPath.h
+index 48f84d9..d47360b 100644
+--- a/NSIndexPath.h
++++ b/NSIndexPath.h
+@@ -62,7 +62,7 @@ NS_ASSUME_NONNULL_BEGIN
+ - (NSIndexPath *)indexPathByRemovingLastIndex;	/* empty path: NSRangeException */
+ 
+ - (NSUInteger)indexAtPosition:(NSUInteger)position;	/* past -length: NSRangeException */
+-- (NSUInteger)length;
++@property (readonly) NSUInteger length;
+ - (void)getIndexes:(NSUInteger *)indexes;		/* all _length positions */
+ - (void)getIndexes:(NSUInteger *)indexes range:(NSRange)positionRange;
+ 
+diff --git a/NSIndexSet.h b/NSIndexSet.h
+index c8d37b8..e6f22b6 100644
+--- a/NSIndexSet.h
++++ b/NSIndexSet.h
+@@ -44,9 +44,9 @@ NS_ASSUME_NONNULL_BEGIN
+ 
+ - (BOOL)containsIndex:(NSUInteger)value;
+ - (BOOL)containsIndexesInRange:(NSRange)range;
+-- (NSUInteger)count;			/* the NUMBER OF INDEXES, not of ranges */
+-- (NSUInteger)firstIndex;		/* NSNotFound when empty */
+-- (NSUInteger)lastIndex;
++@property (readonly) NSUInteger count;			/* the NUMBER OF INDEXES, not of ranges */
++@property (readonly) NSUInteger firstIndex;		/* NSNotFound when empty */
++@property (readonly) NSUInteger lastIndex;
+ - (NSUInteger)indexGreaterThanIndex:(NSUInteger)value;	/* NSNotFound when none */
+ - (NSUInteger)indexLessThanIndex:(NSUInteger)value;
+ - (void)enumerateIndexesUsingBlock:(void (^)(NSUInteger index, BOOL *stop))block;
+@@ -62,7 +62,7 @@ NS_ASSUME_NONNULL_BEGIN
+  * -lastIndexInRange: appear on no documented NSIndexSet page; the documented neighbours are -firstIndex
+  * / -lastIndex and -indexInRange:options:passingTest:. Refusing to invent them was right — the CLAIM was
+  * what was wrong, and it has been removed from the probe's list. */
+-- (NSUInteger)countOfIndexesInRange:(NSRange)range;
++- (NSUInteger)countOfIndexesInRange:(NSRange)range NS_SWIFT_NAME(count(in:));
+ - (NSUInteger)indexGreaterThanOrEqualToIndex:(NSUInteger)index;
+ - (NSUInteger)indexLessThanOrEqualToIndex:(NSUInteger)index;
+ 
+diff --git a/NSMapTable.h b/NSMapTable.h
+index 6779803..5bcc827 100644
+--- a/NSMapTable.h
++++ b/NSMapTable.h
+@@ -82,7 +82,7 @@ typedef NSPointerFunctionsOptions NSMapTableOptions;
+ - (void)removeObjectForKey:(nullable KeyType)aKey;
+ - (void)removeAllObjects;
+ 
+-- (NSUInteger)count;
++@property (readonly) NSUInteger count;
+ - (NSEnumerator<KeyType> *)keyEnumerator;
+ - (NSEnumerator<ObjectType> *)objectEnumerator;
+ - (NSDictionary<KeyType, ObjectType> *)dictionaryRepresentation;
+diff --git a/NSNumber.h b/NSNumber.h
+index 7cb363e..7ca7826 100644
+--- a/NSNumber.h
++++ b/NSNumber.h
+@@ -123,7 +123,7 @@ NS_ASSUME_NONNULL_BEGIN
+ 
+ - (NSString *)stringValue;			/* == -description */
+ - (NSString *)descriptionWithLocale:(nullable id)locale;
+-- (const char *)objCType;
++@property (readonly) const char *objCType;
+ 
+ /* THE DECIMAL CASE (W3). NSDecimal is 44 bytes and this class's store is an 8-byte scalar union, so the
+  * CREATION side is served by NSDecimalNumber — which is what Cocoa does, and what -initWithDecimal: says
+diff --git a/NSOrderedSet.h b/NSOrderedSet.h
+index 23f0137..fa5b5e2 100644
+--- a/NSOrderedSet.h
++++ b/NSOrderedSet.h
+@@ -87,13 +87,13 @@ NS_ASSUME_NONNULL_BEGIN
+ - (instancetype)initWithSet:(NSSet<ObjectType> *)set;
+ - (instancetype)initWithSet:(NSSet<ObjectType> *)set copyItems:(BOOL)flag;
+ 
+-- (NSUInteger)count;
++@property (readonly) NSUInteger count;
+ - (nullable ObjectType)objectAtIndex:(NSUInteger)index;
+ - (nullable ObjectType)objectAtIndexedSubscript:(NSUInteger)index;
+ - (NSUInteger)indexOfObject:(ObjectType)object;
+ - (BOOL)containsObject:(ObjectType)object;
+-- (nullable ObjectType)firstObject;
+-- (nullable ObjectType)lastObject;
++@property (nullable, readonly) ObjectType firstObject;
++@property (nullable, readonly) ObjectType lastObject;
+ 
+ /* The two views: the ORDER (an array) and the MEMBERSHIP (a set). */
+ - (NSArray<ObjectType> *)array;
+diff --git a/NSPointerArray.h b/NSPointerArray.h
+index 794ca47..f8b4827 100644
+--- a/NSPointerArray.h
++++ b/NSPointerArray.h
+@@ -79,7 +79,7 @@ NS_ASSUME_NONNULL_BEGIN
+ 
+ /* THE SLOTS. `count` counts them, NULL or not, and SETTING it grows with NULLs or shrinks (relinquishing
+  * what it drops). */
+-- (NSUInteger)count;
++@property (readonly) NSUInteger count;
+ - (void)setCount:(NSUInteger)count;
+ 
+ /* The elements, in order, as an NSArray — every pointer handed back as an object, so this is only meaningful
+diff --git a/NSSet.h b/NSSet.h
+index 3efd64c..1ba27d8 100644
+--- a/NSSet.h
++++ b/NSSet.h
+@@ -45,6 +45,15 @@
+ 
+ NS_ASSUME_NONNULL_BEGIN
+ 
++/* SWIFT SPELLS THIS CLASS `Set<AnyHashable>` (`swift_bridge`; §2.19 of
++ * SWIFT-PORT-HANDOFF.md). `NSSet *` in an imported signature becomes a Swift
++ * `Set`, and the overlay's `Set: _ObjectiveCBridgeable` puts an `NSSet *` back
++ * on the wire. The element is `AnyHashable` for the same reason a dictionary
++ * key is (this class's type parameter is unconstrained); an explicit
++ * `NSSet<NSString *> *` imports as `Set<String>`.
++ *
++ * The mutable class is NOT bridged - a `NSMutableSet *` stays the class. */
++__attribute__((swift_bridge("Swift.Set")))
+ @interface NSSet<__covariant ObjectType> : NSObject <NSCopying, NSMutableCopying, NSFastEnumeration, NSCoding>
+ {
+ 	NSArray *_members;		/* the members, once each; REPLACED by every mutation */
+@@ -87,13 +96,13 @@ NS_ASSUME_NONNULL_BEGIN
+ - (instancetype)initWithObjects:(ObjectType _Nullable)firstObject, ... NS_REQUIRES_NIL_TERMINATION;
+ - (instancetype)initWithSet:(NSSet<ObjectType> *)set copyItems:(BOOL)copyItems;
+ 
+-- (NSUInteger)count;
++@property (readonly) NSUInteger count;
+ /* BY VALUE: the member that is -isEqual: to `object`, or nil. This is the door that separates a set
+  * from an array, and the probe measures exactly that (a distinguished object finds its twin). */
+ - (nullable ObjectType)member:(ObjectType)object;
+ - (BOOL)containsObject:(ObjectType)object;
+-- (nullable ObjectType)anyObject;
+-- (NSArray<ObjectType> *)allObjects;
++@property (nullable, readonly) ObjectType anyObject;
++@property (readonly, copy) NSArray<ObjectType> *allObjects;
+ - (NSEnumerator<ObjectType> *)objectEnumerator;
+ - (void)enumerateObjectsUsingBlock:(void (^)(ObjectType object, BOOL *stop))block;
+ 
+diff --git a/NSString.h b/NSString.h
+index 7f69421..117a5c1 100644
+--- a/NSString.h
++++ b/NSString.h
+@@ -219,6 +219,18 @@ typedef enum {
+  * the PUBLIC class, so a literal archives as NSString rather than as the compiler's class.
+  * =================================================================================================== */
+ 
++/* SWIFT SPELLS THIS CLASS `String` (Swift's `swift_bridge` attribute; §2.19 of
++ * SWIFT-PORT-HANDOFF.md). The attribute makes every `NSString *` in an imported
++ * signature a Swift `String`, and Swift's Foundation overlay supplies the
++ * `_ObjectiveCBridgeable` conformance that lets the compiler put an `NSString *`
++ * back on the wire at the boundary: `-appendString:` takes a `String`, `-substringFromIndex:`
++ * answers one, and Objective-C still sees the same selectors and the same ABI.
++ *
++ * It must stay on a class whose bridge *exists*: the importer only rewrites the
++ * signature when the Swift type can be converted back (see
++ * `canBridgeBackToObjectiveC` in the fork's ImportType.cpp), so without the
++ * overlay this line is inert rather than wrong. */
++__attribute__((swift_bridge("Swift.String")))
+ @interface NSString : NSObject <NSCopying, NSCoding>
+ 
+ /* THE NSCoding DOORS (§63.22). THE WIRE IS OURS: Apple's spelling for this class's coded form is not published
+@@ -317,8 +329,8 @@ typedef enum {
+ 				  error:(NSError * _Nullable * _Nullable)errorPtr;
+ 
+ /* The primitives every concrete subclass implements. */
+-- (const char *)UTF8String;
+-- (size_t)length;		/* UTF-16 CODE UNITS — Apple's contract (W1 slice 3) */
++@property (readonly) const char *UTF8String;
++@property (readonly) size_t length;		/* UTF-16 CODE UNITS — Apple's contract (W1 slice 3) */
+ - (unsigned char)byteAtIndex:(size_t)index;		/* a UTF-8 BYTE — the house door */
+ - (unsigned short)characterAtIndex:(size_t)index;	/* the UNIT at a unit index */
+ 
+@@ -336,7 +348,7 @@ typedef enum {
+ - (id)initWithCharacters:(const unichar * _Nullable)characters length:(NSUInteger)length;
+ - (id)initWithCharactersNoCopy:(unichar * _Nullable)characters length:(NSUInteger)length
+ 		  freeWhenDone:(BOOL)freeBuffer;
+-- (void)getCharacters:(unichar *)buffer range:(NSRange)range;
++- (void)getCharacters:(unichar *)buffer range:(NSRange)range NS_REFINED_FOR_SWIFT;
+ - (size_t)lengthOfBytesUsingEncoding:(NSStringEncoding)encoding;
+ - (nullable NSData *)dataUsingEncoding:(NSStringEncoding)encoding;
+ - (nullable const char *)cStringUsingEncoding:(NSStringEncoding)encoding;
+diff --git a/NSTimer.h b/NSTimer.h
+index a027b17..88c313f 100644
+--- a/NSTimer.h
++++ b/NSTimer.h
+@@ -72,7 +72,7 @@ NS_ASSUME_NONNULL_BEGIN
+ - (NSDate *)fireDate;
+ - (void)setFireDate:(NSDate *)fireDate;
+ - (NSTimeInterval)timeInterval;
+-- (nullable id)userInfo;
++@property (nullable, readonly) id userInfo;
+ 
+ /* THE FOUR CONVENIENCE PAIRS AND THE BLOCK INITIALIZER — Apple's own spelling, the block being
+  * `void (^)(NSTimer *)`, which RECEIVES THE TIMER ITSELF. Each is the target/selector core above with a
+diff --git a/NSUserActivity.h b/NSUserActivity.h
+index ffbd116..6663e73 100644
+--- a/NSUserActivity.h
++++ b/NSUserActivity.h
+@@ -115,7 +115,7 @@ FOUNDATION_EXPORT NSString * const NSUserActivityTypeBrowsingWeb;
+  * caller's later mutation is not the activity's business. */
+ - (nullable NSString *)title;
+ - (void)setTitle:(nullable NSString *)aTitle;
+-- (nullable NSDictionary *)userInfo;
++@property (nullable, readonly, copy) NSDictionary *userInfo;
+ - (void)setUserInfo:(nullable NSDictionary *)aDictionary;
+ 
+ /* MERGE IN MORE PAYLOAD: a key present in both takes the value from `otherDictionary`, which is what Apple's
+diff --git a/NSValue.h b/NSValue.h
+index ed39784..1031b6e 100644
+--- a/NSValue.h
++++ b/NSValue.h
+@@ -144,7 +144,7 @@ NS_ASSUME_NONNULL_BEGIN
+  * buffer of a size it computed itself. */
+ - (void)getValue:(void *)value size:(NSUInteger)size;
+ 
+-- (const char *)objCType;
++@property (readonly) const char *objCType;
+ - (nullable void *)pointerValue;
+ /* The BORROWED object back — a +0 reference, so ownership never moves to the caller. */
+ - (nullable id)nonretainedObjectValue;

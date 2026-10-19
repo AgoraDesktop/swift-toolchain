@@ -1,0 +1,40 @@
+diff --git a/NSDateFormatter.h b/NSDateFormatter.h
+index 9004b21..6f93d4b 100644
+--- a/NSDateFormatter.h
++++ b/NSDateFormatter.h
+@@ -79,7 +79,7 @@ NS_ASSUME_NONNULL_BEGIN
+ /* CLDR'S SKELETONS, which are not patterns: `@"yMMMd"` asks for a year, a month and a day and
+  * lets the LOCALE decide the order, the separators and the widths. That is a data question, so it
+  * is answered by the data. `options` is Apple's reserved bitmask and is ignored here. */
+-+ (nullable NSString *)dateFormatFromTemplate:(NSString *)template
+++ (nullable NSString *)dateFormatFromTemplate:(NSString *)aTemplate
+ 				      options:(NSUInteger)options
+ 				       locale:(nullable NSLocale *)locale;
+ 
+@@ -142,7 +142,7 @@ NS_ASSUME_NONNULL_BEGIN
+ 
+ /* CLDR'S SKELETON, APPLIED: the same question +dateFormatFromTemplate:options:locale: answers, but
+  * asked of THIS formatter, so its locale, calendar and zone decide the pattern. */
+-- (void)setLocalizedDateFormatFromTemplate:(NSString *)template;
++- (void)setLocalizedDateFormatFromTemplate:(NSString *)aTemplate;
+ 
+ /* THE BEHAVIOUR KNOBS. Only ONE behaviour exists here and it is the modern one — Apple's
+  * NSDateFormatterBehavior10_4, which is what NSDateFormatterBehaviorDefault MEANS on any current
+diff --git a/NSRegularExpression.h b/NSRegularExpression.h
+index 77103a4..ca4250c 100644
+--- a/NSRegularExpression.h
++++ b/NSRegularExpression.h
+@@ -146,11 +146,11 @@ enum {
+ - (NSString *)stringByReplacingMatchesInString:(NSString *)string
+ 				       options:(NSMatchingOptions)options
+ 					 range:(NSRange)range
+-				  withTemplate:(NSString *)template;
++				  withTemplate:(NSString *)aTemplate;
+ - (NSUInteger)replaceMatchesInString:(NSMutableString *)string
+ 			     options:(NSMatchingOptions)options
+ 			       range:(NSRange)range
+-			withTemplate:(NSString *)template;
++			withTemplate:(NSString *)aTemplate;
+ 
+ - (BOOL)isEqual:(nullable id)other;
+ - (NSUInteger)hash;

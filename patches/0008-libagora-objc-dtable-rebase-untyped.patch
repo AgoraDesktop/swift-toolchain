@@ -1,0 +1,43 @@
+diff --git a/dtable.c b/dtable.c
+index a6f1641..cf3fed3 100644
+--- a/dtable.c
++++ b/dtable.c
+@@ -459,6 +459,7 @@ static void rebaseDtableRecursive(Class cls, Class newSuper)
+ 	dtable_t parentDtable = dtable_for_class(newSuper);
+ 	// Collect all of the methods for this class:
+ 	dtable_t temporaryDtable = SparseArrayNewWithDepth(dtable_depth);
++	dtable_t dtable = dtable_for_class(cls);
+ 
+ 	for (struct objc_method_list *list = cls->methods ; list != NULL ; list = list->next)
+ 	{
+@@ -472,11 +473,29 @@ static void rebaseDtableRecursive(Class cls, Class newSuper)
+ 			{
+ 				SparseArrayInsert(temporaryDtable, idx, m);
+ 			}
++#ifdef TYPE_DEPENDENT_DISPATCH
++			// AGORA: in TDD mode `installMethodInDtable' also stores every
++			// method under the *untyped* selector of its name, and that is the
++			// slot every Swift send uses (Swift's selector records are
++			// untyped).  Rebuilding the table for a new superclass must keep
++			// that property: without it the untyped slot of an overridden name
++			// is filled from the new parent, so a Swift send would reach the
++			// superclass's implementation.  That is exactly how the Swift
++			// runtime's `__SwiftNativeNSError -domain' (typed `@16@0:8') lost
++			// to NSError's `-domain' (typed `@"NSString"16@0:8') after
++			// class_setSuperclass() reparented the error box.
++			uint32_t untypedIdx = get_untyped_idx(m->selector);
++			if (SparseArrayLookup(temporaryDtable, untypedIdx) == NULL)
++			{
++				SparseArrayInsert(temporaryDtable, untypedIdx, m);
++			}
++			SparseArrayInsert(dtable, untypedIdx, m);
++#endif
+ 		}
+ 	}
+ 
+ 
+-	dtable_t dtable = dtable_for_class(cls);
++
+ 	uint32_t idx = 0;
+ 	struct objc_method *method;
+ 	// Install all methods from the parent that aren't overridden here.

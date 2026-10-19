@@ -1,0 +1,70 @@
+diff --git a/CMakeLists.txt b/CMakeLists.txt
+index 3f07337..79baba4 100644
+--- a/CMakeLists.txt
++++ b/CMakeLists.txt
+@@ -30,7 +30,11 @@ INCLUDE (CheckCXXSourceCompiles)
+ INCLUDE (FetchContent)
+ INCLUDE (CheckSymbolExists)
+ 
+-set(libobjc_VERSION 4.6)
++# SONAME is libobjc.so.4 (not 4.6) so the toolchain's libswiftCore, which links
++# the conventional name libobjc.so.4, resolves to THIS runtime rather than a
++# system libobjc.so.4. Two ObjC runtimes in one process deadlock during
++# init_runtime, because each interposes the other's class_getSuperclass.
++set(libobjc_VERSION 4)
+ 
+ 
+ if (MSVC)
+diff --git a/class.h b/class.h
+index 081feab..77f52d1 100644
+--- a/class.h
++++ b/class.h
+@@ -464,6 +464,20 @@ void freeMethodLists(Class aClass);
+ 
+ void objc_load_class(struct objc_class *cls);
+ 
++/**
++ * Registers a class that was emitted by a compiler but instantiated at runtime
++ * (Swift instantiates generic class metadata lazily, from a pattern, so such a
++ * class cannot appear in an `.objc_init` class list), and makes it dispatchable.
++ *
++ * `objc_load_class()` alone installs the `uninstalled_dtable` sentinel but
++ * leaves the dispatch tables empty; `objc_registerClassPair()` does not even
++ * install the sentinel, so a send to such a class walks a null table.  This is
++ * the supported entry point for that case: it loads the class and then forces
++ * class initialization, which builds the dispatch tables from the class's
++ * method lists.
++ */
++OBJC_PUBLIC void objc_loadClass_np(Class cls);
++
+ #ifdef __cplusplus
+ } // extern "C"
+ #endif
+diff --git a/class_table.c b/class_table.c
+index 3b3d871..b8b082d 100644
+--- a/class_table.c
++++ b/class_table.c
+@@ -404,6 +404,23 @@ static void reload_class(struct objc_class *class, struct objc_class *old)
+ 	}
+ }
+ 
++// Defined in dtable.c.
++OBJC_PUBLIC void objc_send_initialize(id object);
++
++OBJC_PUBLIC void objc_loadClass_np(Class cls)
++{
++	{
++		// objc_load_class() assumes the runtime lock is held (it inserts into the
++		// class table). objc_send_initialize() takes the lock itself, so it must
++		// run outside this scope.
++		LOCK_RUNTIME_FOR_SCOPE();
++		objc_load_class(cls);
++	}
++	// Installs the dispatch tables from the class's method lists.  Without this
++	// the class keeps the `uninstalled_dtable` sentinel and every send misses.
++	objc_send_initialize((id)cls);
++}
++
+ /**
+  * Loads a class.  This function assumes that the runtime mutex is locked.
+  */

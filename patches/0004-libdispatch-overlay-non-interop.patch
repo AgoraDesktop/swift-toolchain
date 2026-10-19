@@ -1,0 +1,16 @@
+diff --git a/src/swift/CMakeLists.txt b/src/swift/CMakeLists.txt
+index a0082fb..d9d624b 100644
+--- a/src/swift/CMakeLists.txt
++++ b/src/swift/CMakeLists.txt
+@@ -16,6 +16,11 @@ add_library(swiftDispatch
+   Time.swift
+   Wrapper.swift)
+ target_compile_options(swiftDispatch PRIVATE
++  # Agora: the toolchain's Swift driver enables Objective-C interop by default
++  # (the installed stdlib is built with it).  This overlay is not interop-aware:
++  # its shims use `id`-typed dispatch_data_t, which ARC rejects (bridged-cast
++  # errors).  Keep the overlay on the non-interop ABI it has always had.
++  "SHELL:-Xfrontend -disable-objc-interop"
+   "SHELL:-Xcc -fblocks"
+   "SHELL:-Xcc -fmodule-map-file=${PROJECT_SOURCE_DIR}/dispatch/module.modulemap"
+   "SHELL:-Xcc -I${PROJECT_SOURCE_DIR}"
