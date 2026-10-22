@@ -38,6 +38,39 @@ public struct Data: Equatable, Hashable {
     _bytes = Array(repeating: value, count: count)
   }
 
+  /// Darwin's reading options. The option set is nested here (as it is on
+  /// Darwin), and the values are Foundation's: `NSDataReadingOptions` already has
+  /// them, so this is a typed face over the same bits.
+  public struct ReadingOptions: OptionSet, Hashable {
+    public let rawValue: UInt
+    public init(rawValue: UInt) { self.rawValue = rawValue }
+
+    public static let mappedIfSafe = ReadingOptions(rawValue: UInt(NSDataReadingMappedIfSafe.rawValue))
+    public static let uncached = ReadingOptions(rawValue: UInt(NSDataReadingUncached.rawValue))
+    public static let alwaysMapped = ReadingOptions(rawValue: UInt(NSDataReadingMappedAlways.rawValue))
+  }
+
+  // The `options` are accepted and ignored: `mappedIfSafe` is a performance hint,
+  // and going through the throwing ObjC initializer (which would honour them)
+  // needs the NSError-to-Error bridge in a class constructor, which this compiler
+  // lowers into a bad `_convertNSErrorToError` call (a toolchain crash, recorded
+  // in SWIFT-FOUNDATION-P2-SPIKE.md). The non-optional read is the same bytes.
+  private struct _DataReadError: Error {}
+
+  public init(contentsOf url: URL, options: ReadingOptions = []) throws {
+    guard let data = NSData(contentsOf: url._url) else {
+      throw _DataReadError()
+    }
+    self.init(data)
+  }
+
+  public init(contentsOfFile path: String, options: ReadingOptions = []) throws {
+    guard let data = NSData(contentsOfFile: path) else {
+      throw _DataReadError()
+    }
+    self.init(data)
+  }
+
   public init(_ data: NSData) {
     let count = data.length
     var bytes = [UInt8](repeating: 0, count: count)

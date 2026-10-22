@@ -3,9 +3,9 @@
 # build-swift-foundation.sh — P2 spike: build swift-foundation's
 # FoundationEssentials / FoundationInternationalization against Agora.
 #
-#   swift-toolchain/scripts/build-swift-foundation.sh --configure
-#   swift-toolchain/scripts/build-swift-foundation.sh --build [target]
-#   swift-toolchain/scripts/build-swift-foundation.sh --ccache-log
+#   swift-toolchain/scripts/build-swift-foundation.sh --configure [--testing]
+#   swift-toolchain/scripts/build-swift-foundation.sh --build [target ...]
+#   swift-toolchain/scripts/build-swift-foundation.sh --logs
 #
 # This is a SPIKE build, not the shipped arrangement: the modules land in a
 # private tree (AGORA_FOUNDATION_BUILD_DIR), they are not installed next to the
@@ -80,6 +80,8 @@ configure() {
   # the compiler only reads it when a macro is expanded. P3 must build the plugin for
   # real (see SWIFT-FOUNDATION-P2-SPIKE.md).
   local macro_workaround="$BUILD/empty-plugin-dir"
+  local enable_testing=""
+  if (( testing_build )); then enable_testing=" -enable-testing"; fi
   cmake -S "$SOURCE" -B "$BUILD" -G Ninja \
     -DCMAKE_BUILD_TYPE=Debug \
     -DCMAKE_Swift_COMPILER="$SWIFTC" \
@@ -93,24 +95,44 @@ configure() {
     -D_SwiftFoundationICU_SourceDIR="$OPEN_SWIFT_SOURCE_ROOT/swift-foundation-icu" \
     -DSwiftSyntax_DIR="$SWIFT_SYNTAX_CMAKE" \
     -DSwiftFoundation_MACRO="$macro_workaround" \
-    "-DCMAKE_Swift_FLAGS=${SWIFT_FLAGS[*]}" \
+    "-DCMAKE_Swift_FLAGS=${SWIFT_FLAGS[*]}$enable_testing" \
     -DCMAKE_SHARED_LINKER_FLAGS="-L$AGORA_PREFIX/lib" \
     -DCMAKE_EXE_LINKER_FLAGS="-L$AGORA_PREFIX/lib" \
     2>&1 | tee "$BUILD/configure.log"
 }
 
 build() {
-  local target="${1:-FoundationEssentials}"
-  cmake --build "$BUILD" --target "$target" -- \
-    2>&1 | tee "$BUILD/build-$target.log"
+  local target
+  for target in "$@"; do
+    cmake --build "$BUILD" --target "$target" 2>&1 | tee "$BUILD/build-$target.log"
+  done
 }
 
-case "${1:-}" in
+# The test targets are `@testable import FoundationEssentials`, so the suite needs a
+# module built with -enable-testing. That is a separate build tree: the spike's
+# shipped-shape build stays free of testable symbols.
+action=""
+targets=()
+testing_build=0
+for arg in "$@"; do
+  case "$arg" in
+    --testing)               testing_build=1 ;;
+    --configure|--build|--logs) action="$arg" ;;
+    -*)                      echo "unknown option: $arg" >&2; exit 2 ;;
+    *)                       targets+=("$arg") ;;
+  esac
+done
+if (( testing_build )); then
+  BUILD="$AGORA_FOUNDATION_BUILD_DIR-testing"
+  INSTALL="$BUILD/install"
+fi
+
+case "$action" in
   --configure) configure ;;
-  --build)     shift; build "$@" ;;
+  --build)     build "${targets[@]:-FoundationEssentials}" ;;
   --logs)      grep -nE 'error:|undefined reference|fatal error' "$BUILD"/*.log | head -60 ;;
   *)
-    echo "usage: $0 --configure | --build [target1 target2 ...] | --logs" >&2
+    echo "usage: $0 [--testing] --configure | --build [target ...] | --logs" >&2
     exit 2
     ;;
 esac
