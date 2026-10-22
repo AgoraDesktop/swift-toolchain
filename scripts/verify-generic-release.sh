@@ -57,10 +57,22 @@
 #
 # METHOD NOTE: the gdb readings above were taken against the installed libswiftCore,
 # which is `-O` with no debug info; breakpoints land after the prologue, so argument
-# registers are no longer trustworthy.  The next step is not another breakpoint on that
-# build: it is a scratch `-O0 -g` build of the stdlib runtime (same tree, separate
-# build dir), so `pattern`, `metadata` and `bounds` can be read as typed values and the
-# VWT word before an instantiated class can be printed directly.
+# registers are no longer trustworthy.  Instead the runtime now carries an env-gated
+# diagnostic (`SWIFT_LAYOUT2_DIAG=1`): `initializeClassMetadataFromPattern` prints the
+# pattern's flags, bounds and the VWT word before the class, and `swift_arrayDestroy`
+# prints its `self`, `self->getKind()`, the witness table, the `destroy` symbol and its
+# caller.  What it showed:
+#
+#   [pattern] meta=0x... flags=2 neg=3 pos=25, vwt after header init = Bo
+#   [arrayDestroy] caller=_ContiguousArrayStorage.deinit, count=4,
+#                  self=0x... kind=771 (= 0x303, a witness-table flags word)
+#
+# i.e. the class's own witnesses are right, and the `self` the array storage passes to
+# `swift_arrayDestroy` is **not the element class's metadata** — it reads like a value
+# witness table.  The next probe prints that `self`'s first words (and the element
+# metadata the storage holds) to see which pointer the storage hands over at layout 2;
+# the bug is then in how the generic array storage passes/destroys its element metadata,
+# not in the class pattern.
 #
 #   AGORA_PREFIX, AGORA_SWIFT_ROOT, ... as in native-env.sh
 
