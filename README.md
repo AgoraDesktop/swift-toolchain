@@ -57,9 +57,11 @@ baseline and the staging are in
 
 Since the 2026-10-17 flip, the installed `swiftc` and its stdlib are built with
 `SWIFT_OBJC_CLASS_LAYOUT=2`: a Swift class with Objective-C ancestry is a real
-GNUstep class object, generic and resilient classes included, and `deinit` runs
-(S1-S5 of [`../SWIFT-GNUSTEP-CLASS-ABI.md`](../SWIFT-GNUSTEP-CLASS-ABI.md) are
-all gated). The toolchain also ships a **Swift Foundation overlay**
+GNUstep class object - *every* class instantiated from a metadata pattern, not
+only one with Objective-C ancestry, so `objc_retain`/`objc_release` reach a Swift
+instance from a bridged collection or `-[NSMutableArray addObject:]` - generic and
+resilient classes included, and `deinit` runs (S1-S5 of
+[`../SWIFT-GNUSTEP-CLASS-ABI.md`](../SWIFT-GNUSTEP-CLASS-ABI.md) are all gated). The toolchain also ships a **Swift Foundation overlay**
 (`foundation-overlay/`, installed as `lib/swift/linux/Foundation.swiftmodule` +
 `libFoundation.so`) with the value bridges, `Error` <-> `NSError`, and the
 Cocoa-shaped surface (`Sequence` collections, Swift-typed `NSError`/`NSString`
@@ -69,6 +71,7 @@ toolchain like this:
 ```sh
 swift-toolchain/scripts/verify-swift-port.sh          # language/runtime + interop
 swift-toolchain/scripts/verify-foundation-parity.sh --check   # Foundation surface
+swift-toolchain/scripts/verify-generic-release.sh     # generic class release
 swift-interop-probe/scripts/run-native-probe.sh       # both probes, 17/17
 
 T=~/.agora-swift/toolchain/usr

@@ -192,10 +192,11 @@ for i in 0..<200 {
 expect(total == 19900, "many instantiations")
 
 // A *non-generic* class with a generic Swift superclass.  Its metadata is
-// instantiated at run time exactly like a generic class's, but the class is not
-// itself generic, and its generic superclass is not an Objective-C class object
-// (S4).  Treating it as one made libobjc2 try to resolve a superclass that was
-// never registered and crash in objc_resolve_class.
+// completed at run time like a generic class's, but the class is not itself
+// generic, so its metadata object - and its metaclass - are emitted statically.
+// It is registered with libobjc2 like any other class object; the superclass it
+// names is one too, since every pattern class is (see below), which is what
+// makes the registration resolvable.
 class FixedBase<T> {
   var field: T
   init(_ field: T) { self.field = field }
@@ -214,6 +215,23 @@ expect(fixedGrand.field == 41 && fixedGrand.marker == 3,
        "fixed class chain with generic ancestry")
 expect(String(describing: type(of: fixedSub)) == "FixedSub",
        "fixed generic-ancestry class name")
+
+// Every runtime-instantiated class is a GNUstep class object, whatever its
+// ancestry: the metadata's first word is `isa` (a metaclass), not the
+// `MetadataKind::Class` placeholder (0).  This is the invariant that lets
+// Objective-C code - including the stdlib's own `_ContiguousArrayStorage<AnyObject>`
+// element destroy - retain and release a Swift class instance with
+// `objc_retain`/`objc_release`.  verify-generic-release.sh is the behavioural
+// gate; this is the shape check.
+func metadataFirstWord(of type: Any.Type) -> UInt {
+  return unsafeBitCast(type, to: UnsafePointer<UInt>.self)[0]
+}
+expect(metadataFirstWord(of: Box<Int>.self) != 0,
+       "a pure Swift generic class is a class object")
+expect(metadataFirstWord(of: Box<String>.self) != 0,
+       "every instantiation is a class object")
+expect(metadataFirstWord(of: FixedSub.self) != 0,
+       "a generic-ancestry fixed class is a class object")
 
 precondition(failures.isEmpty,
              "generic ABI: \(failures.count) failure(s): \(failures)")
