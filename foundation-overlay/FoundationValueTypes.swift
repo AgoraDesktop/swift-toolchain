@@ -1295,7 +1295,7 @@ public struct Decimal: Hashable, Comparable, CustomStringConvertible {
 
   public static func == (lhs: Decimal, rhs: Decimal) -> Bool {
     return NSDecimalNumber(decimal: lhs._value)
-      .compare(NSDecimalNumber(decimal: rhs._value)) == NSOrderedSame
+      .compare(NSDecimalNumber(decimal: rhs._value)) == ComparisonResult.orderedSame
   }
 
   public func hash(into hasher: inout Hasher) {
@@ -1304,7 +1304,7 @@ public struct Decimal: Hashable, Comparable, CustomStringConvertible {
 
   public static func < (lhs: Decimal, rhs: Decimal) -> Bool {
     return NSDecimalNumber(decimal: lhs._value)
-      .compare(NSDecimalNumber(decimal: rhs._value)) == NSOrderedAscending
+      .compare(NSDecimalNumber(decimal: rhs._value)) == ComparisonResult.orderedAscending
   }
 
   public var exponent: Int { return Int(_value._exponent) }
@@ -1603,11 +1603,11 @@ extension Calendar {
 
   public func isDate(_ date1: Date, equalTo date2: Date,
                      toGranularity component: Component) -> Bool {
-    return compare(date1, to: date2, toGranularity: component) == NSOrderedSame
+    return compare(date1, to: date2, toGranularity: component) == ComparisonResult.orderedSame
   }
 
   public func compare(_ date1: Date, to date2: Date,
-                      toGranularity component: Component) -> NSComparisonResult {
+                      toGranularity component: Component) -> ComparisonResult {
     return _calendar.compare(date1 as NSDate, to: date2 as NSDate,
                              toUnitGranularity: component._unit)
   }
@@ -1632,3 +1632,202 @@ extension Calendar {
     return _calendar.isDate(inWeekend: date as NSDate)
   }
 }
+
+// MARK: - Description and comparison conformances
+
+// Darwin's value types are `CustomStringConvertible` and
+// `CustomDebugStringConvertible`; the C structs are `Equatable`/`Hashable` because
+// on Darwin they are Swift structs rather than imported ones. This section
+// supplies those conformances, so a program that hashes a `CGRect` or
+// interpolates an `IndexPath` compiles as it does on Darwin.
+//
+// The debug form is the description form unless a type has something better:
+// Darwin's adds internal detail, and these hand-written types are replaced by
+// FoundationEssentials in P3 (SWIFT-FOUNDATION-PARITY-PLAN.md).
+
+extension Data: CustomStringConvertible, CustomDebugStringConvertible {
+  public var debugDescription: String { return description }
+}
+
+extension Date: CustomDebugStringConvertible {
+  public var debugDescription: String { return description }
+}
+
+extension URL: CustomDebugStringConvertible {
+  public var debugDescription: String { return description }
+}
+
+extension UUID: CustomDebugStringConvertible {
+  public var debugDescription: String { return description }
+}
+
+extension Decimal: CustomDebugStringConvertible {
+  public var debugDescription: String { return description }
+}
+
+extension IndexPath: CustomStringConvertible, CustomDebugStringConvertible {
+  public var description: String {
+    if _indices.isEmpty { return "{length = 0, path = }" }
+    return "{length = \(_indices.count), path = \(_indices.map(String.init).joined(separator: " - "))}"
+  }
+  public var debugDescription: String { return description }
+}
+
+extension TimeZone: CustomStringConvertible, CustomDebugStringConvertible {
+  public var description: String { return _zone.description }
+  public var debugDescription: String { return description }
+}
+
+extension Locale: CustomStringConvertible, CustomDebugStringConvertible {
+  public var description: String { return _locale.description }
+  public var debugDescription: String { return description }
+}
+
+extension Calendar: CustomStringConvertible, CustomDebugStringConvertible {
+  public var description: String { return _calendar.description }
+  public var debugDescription: String { return description }
+}
+
+extension DateComponents: CustomStringConvertible, CustomDebugStringConvertible {
+  public var description: String { return _components.description }
+  public var debugDescription: String { return description }
+}
+
+extension PersonNameComponents: CustomStringConvertible, CustomDebugStringConvertible {
+  public var description: String { return _components.description }
+  public var debugDescription: String { return description }
+}
+
+extension CharacterSet: CustomStringConvertible, CustomDebugStringConvertible {
+  public var description: String { return _set.description }
+  public var debugDescription: String { return description }
+}
+
+extension IndexSet: CustomStringConvertible, CustomDebugStringConvertible {
+  public var description: String { return _set.description }
+  public var debugDescription: String { return description }
+}
+
+extension DateInterval: CustomStringConvertible, CustomDebugStringConvertible {
+  public var description: String {
+    return "\(start) to \(start.addingTimeInterval(duration))"
+  }
+  public var debugDescription: String { return description }
+}
+
+extension Notification: CustomStringConvertible, CustomDebugStringConvertible {
+  public var description: String {
+    return "name = \(name), object = \(String(describing: object)), "
+         + "userInfo = \(String(describing: userInfo))"
+  }
+  public var debugDescription: String { return description }
+}
+
+extension AffineTransform: CustomStringConvertible, CustomDebugStringConvertible {
+  public var description: String {
+    return "[\(m11), \(m12), \(tX); \(m21), \(m22), \(tY)]"
+  }
+  public var debugDescription: String { return description }
+}
+
+extension DateInterval: Comparable {
+  public static func < (lhs: DateInterval, rhs: DateInterval) -> Bool {
+    if lhs.start != rhs.start { return lhs.start < rhs.start }
+    return lhs.duration < rhs.duration
+  }
+}
+
+extension UUID: Comparable {
+  public static func < (lhs: UUID, rhs: UUID) -> Bool {
+    return lhs.uuidString < rhs.uuidString
+  }
+}
+
+// The C structs: on Darwin these are Swift structs with synthesized equality, so
+// the imported ones need the two members spelled out.
+extension CGPoint: Equatable, Hashable {
+  public static func == (lhs: CGPoint, rhs: CGPoint) -> Bool {
+    return lhs.x == rhs.x && lhs.y == rhs.y
+  }
+  public func hash(into hasher: inout Hasher) {
+    hasher.combine(x)
+    hasher.combine(y)
+  }
+}
+
+extension CGSize: Equatable, Hashable {
+  public static func == (lhs: CGSize, rhs: CGSize) -> Bool {
+    return lhs.width == rhs.width && lhs.height == rhs.height
+  }
+  public func hash(into hasher: inout Hasher) {
+    hasher.combine(width)
+    hasher.combine(height)
+  }
+}
+
+extension CGRect: Equatable, Hashable {
+  public static func == (lhs: CGRect, rhs: CGRect) -> Bool {
+    return lhs.origin == rhs.origin && lhs.size == rhs.size
+  }
+  public func hash(into hasher: inout Hasher) {
+    hasher.combine(origin)
+    hasher.combine(size)
+  }
+}
+
+extension OperatingSystemVersion: Equatable, Hashable {
+  public static func == (lhs: OperatingSystemVersion, rhs: OperatingSystemVersion) -> Bool {
+    return lhs.majorVersion == rhs.majorVersion
+        && lhs.minorVersion == rhs.minorVersion
+        && lhs.patchVersion == rhs.patchVersion
+  }
+  public func hash(into hasher: inout Hasher) {
+    hasher.combine(majorVersion)
+    hasher.combine(minorVersion)
+    hasher.combine(patchVersion)
+  }
+}
+
+extension Notification: Equatable, Hashable {
+  public static func == (lhs: Notification, rhs: Notification) -> Bool {
+    if lhs.name != rhs.name { return false }
+    if (lhs.object as AnyObject?) !== (rhs.object as AnyObject?) { return false }
+    return ((lhs.userInfo ?? [:]) as NSDictionary).isEqual(rhs.userInfo ?? [:])
+  }
+  public func hash(into hasher: inout Hasher) {
+    hasher.combine(name)
+  }
+}
+
+// `Comparable`, forwarding to the `-compare:` each class already implements. The
+// protocol is declared on the class, not on `NSObject`: only these have an order.
+extension NSDate: Comparable {
+  public static func < (lhs: NSDate, rhs: NSDate) -> Bool {
+    return lhs.compare(rhs) == ComparisonResult.orderedAscending
+  }
+}
+
+extension NSDateInterval: Comparable {
+  public static func < (lhs: NSDateInterval, rhs: NSDateInterval) -> Bool {
+    return lhs.compare(rhs) == ComparisonResult.orderedAscending
+  }
+}
+
+extension NSIndexPath: Comparable {
+  public static func < (lhs: NSIndexPath, rhs: NSIndexPath) -> Bool {
+    return lhs.compare(rhs) == ComparisonResult.orderedAscending
+  }
+}
+
+extension NSNumber: Comparable {
+  public static func < (lhs: NSNumber, rhs: NSNumber) -> Bool {
+    return lhs.compare(rhs) == ComparisonResult.orderedAscending
+  }
+}
+
+extension NSString: Comparable {
+  public static func < (lhs: NSString, rhs: NSString) -> Bool {
+    return lhs.compare(rhs as String) == ComparisonResult.orderedAscending
+  }
+}
+

@@ -297,8 +297,8 @@ class Diff:
                 "prefix": f"Foundation:{type_path}",
                 "protocol": "*",
                 "count": n,
-                "reason": reason_for(
-                    container(type_path), container(type_path) in present
+                "reason": conformance_reason(
+                    [p for t, p in self.conformance_gaps if t == type_path]
                 ),
             }
             for type_path, n in sorted(
@@ -509,6 +509,40 @@ CLUSTER_REASONS = {
     "BlockOperation": "P1: renamed; member/property-shape gaps remain",
     "===(_:_:)": "P1: operator re-export from the stdlib",
 }
+
+
+# What a still-missing conformance actually waits on. Used to make a generated
+# allowlist entry say why, not just what.
+PROTOCOL_STAGE = {
+    "Decodable": "P3: FoundationEssentials Codable",
+    "Encodable": "P3: FoundationEssentials Codable",
+    "ReferenceConvertible": "T3: the protocol arrives with FoundationEssentials",
+    "NSCoding": "archiving: no -encodeWithCoder:/-initWithCoder: on this class",
+    "NSSecureCoding": "archiving: no secure-coding implementation",
+    "NSMutableCopying": "copying: no -mutableCopy implementation",
+    "CustomReflectable": "P1: customMirror not written",
+    "Sequence": "P3: collection surface",
+    "Collection": "P3: collection surface",
+    "RandomAccessCollection": "P3: collection surface",
+    "BidirectionalCollection": "P3: collection surface",
+    "MutableCollection": "P3: collection surface",
+    "RangeReplaceableCollection": "P3: collection surface",
+    "DataProtocol": "P3: collection surface",
+    "MutableDataProtocol": "P3: collection surface",
+    "ContiguousBytes": "P3: collection surface",
+    "ExpressibleByArrayLiteral": "P1: literal conformance not declared",
+    "ExpressibleByDictionaryLiteral": "P1: literal conformance not declared",
+}
+
+
+def conformance_reason(protocols):
+    stages = {PROTOCOL_STAGE.get(p) for p in protocols}
+    listed = ", ".join(sorted(protocols))
+    if len(stages) == 1 and None not in stages:
+        return f"{stages.pop()} ({listed})"
+    if None not in stages:
+        return f"missing conformances: {listed}"
+    return f"missing conformances: {listed}"
 
 
 def reason_for(name, present):
