@@ -238,7 +238,11 @@ class Diff:
                     matches
                 )
             actual, recorded = len(matches), entry["count"]
-            if actual > recorded:
+            if recorded == 0:
+                problems.append(
+                    f"empty entry: {entry['raw']} accepts nothing — delete it"
+                )
+            elif actual > recorded:
                 problems.append(
                     f"gap grew: {entry['raw']} (allowlisted {recorded}, "
                     f"now {actual})"
@@ -442,19 +446,19 @@ CLUSTER_REASONS = {
     # P1: names and annotations
     "Bundle": "P1: Bundle landed; the rest are member/property-shape gaps",
     "Process": "P1: rename layer (NSTask -> Process)",
-    "FileHandle": "P1: rename layer",
-    "Pipe": "P1: rename layer",
-    "Port": "P1: rename layer",
-    "Stream": "P1: rename layer",
-    "Timer": "P1: rename layer",
-    "RunLoop": "P1: rename layer",
-    "Thread": "P1: rename layer",
-    "Operation": "P1: rename layer",
-    "OperationQueue": "P1: rename layer",
-    "Scanner": "P1: rename layer",
-    "UserDefaults": "P1: rename layer",
-    "NotificationQueue": "P1: rename layer",
-    "Host": "P1: rename layer (NSHost)",
+    "FileHandle": "P1: renamed; member/property-shape gaps remain",
+    "Pipe": "P1: renamed; member/property-shape gaps remain",
+    "Port": "P1: renamed; member/property-shape gaps remain",
+    "Stream": "P1: renamed; member/property-shape gaps remain",
+    "Timer": "P1: renamed; member/property-shape gaps remain",
+    "RunLoop": "P1: renamed; member/property-shape gaps remain",
+    "Thread": "P1: renamed; member/property-shape gaps remain",
+    "Operation": "P1: renamed; member/property-shape gaps remain",
+    "OperationQueue": "P1: renamed; member/property-shape gaps remain",
+    "Scanner": "P1: renamed; member/property-shape gaps remain",
+    "UserDefaults": "P1: renamed; member/property-shape gaps remain",
+    "NotificationQueue": "P1: renamed; member/property-shape gaps remain",
+    "Host": "P1: renamed; member/property-shape gaps remain",
     # geometry lives in CoreGraphics, not Foundation
     "CGFloat": "geometry: a typealias to Double here; a struct in the reference",
     "CGPoint": "geometry: CoreGraphics type, not re-exported",
@@ -495,7 +499,7 @@ CLUSTER_REASONS = {
     "NSMutableCopying": "P1: copying protocol suite",
     "NSDecimalNumberBehaviors": "P1: value-type long tail",
     "NSIndexSetIterator": "P1: value-type long tail",
-    "BlockOperation": "P1: rename layer (NSBlockOperation -> BlockOperation)",
+    "BlockOperation": "P1: renamed; member/property-shape gaps remain",
     "===(_:_:)": "P1: operator re-export from the stdlib",
 }
 
@@ -739,6 +743,8 @@ def main(argv=None):
                     }
                 )
 
+        # A count of zero means the gap is closed; the entry has done its job.
+        entries = [e for e in entries if e["count"] > 0]
         entries.sort(key=lambda e: (e["prefix"], e["kind"], e["protocol"] or ""))
         write_allowlist(args.update_allowlist, entries, HEADER)
         print(f"updated {len(entries)} entries in {args.update_allowlist}")
