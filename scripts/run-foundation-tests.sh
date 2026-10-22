@@ -5,6 +5,11 @@
 #
 #   swift-toolchain/scripts/run-foundation-tests.sh [TestFile.swift ...]
 #   swift-toolchain/scripts/run-foundation-tests.sh --all
+#   swift-toolchain/scripts/run-foundation-tests.sh --fi --all
+#
+# Two suites live here: `FoundationEssentialsTests` (the default) and
+# `FoundationInternationalizationTests` (`--fi`: Locale, Calendar, TimeZone and
+# the FormatStyle family, over ICU).
 #
 # No SwiftPM here, and swift-foundation's `Tests/` have no CMakeLists, so the
 # harness is explicit: compile one test file at a time with the `Testing` library
@@ -28,11 +33,11 @@
 #     `testData` looks for (`swift-foundation_FoundationEssentialsTests-tool
 #     .resources/Resources`), which is how the SwiftPM bundle is spelled on Linux.
 #
-# The two remaining non-builds are recorded, not hidden: `PredicateTests` needs
-# the `FoundationMacros` macro plugin, which this spike does not build (see
-# SWIFT-FOUNDATION-P2-SPIKE.md), and `NotificationCenterTests` builds but has one
-# failing assertion (subject matching for non-object literals) - see the summary
-# and the spike's findings.
+# The predicate suites (`#Predicate`/`#Expression`) need swift-foundation's macro
+# plugin; build it with build-foundation-macros.sh and point
+# AGORA_FOUNDATION_MACROS_DIR at it (default: ~/.agora-swift/build/p2-foundation-macros).
+# Without it those files do not build - that is the only remaining build gap, and
+# it is a missing input rather than a defect.
 #
 # Inputs (all produced by the other spike scripts):
 #   ~/.agora-swift/build/p2-foundation-testing   FE/FI with -enable-testing + reexport Foundation
@@ -51,38 +56,80 @@ ICU="$OPEN_SWIFT_SOURCE_ROOT/swift-foundation-icu/icuSources/include"
 SHIMS="$SRC/Sources/_FoundationCShims/include"
 SP="${AGORA_FOUNDATION_SPIKE_DIR:-$OPEN_SWIFT_BUILD_ROOT/p2-foundation-testing}"
 TB="${AGORA_SWIFT_TESTING_BUILD_DIR:-$OPEN_SWIFT_BUILD_ROOT/p2-swift-testing}"
-OUT="$SP/tests"
-TESTS="$SRC/Tests/FoundationEssentialsTests"
+SUITE="FoundationEssentialsTests"
+# swift-foundation's macro plugin (`#Predicate`/`#Expression`/`#Bundle`), built by
+# build-foundation-macros.sh.  A library plugin: it runs inside the compiler
+# process, so it is a host build and is loaded with -load-plugin-library.
+MACROS="${AGORA_FOUNDATION_MACROS_DIR:-$OPEN_SWIFT_BUILD_ROOT/p2-foundation-macros}"
+MACRO_PLUGIN="$MACROS/lib/libFoundationMacros.so"
 
-FILES=()
+want_all=0
+explicit=()
 for arg in "$@"; do
   case "$arg" in
-    --all) FILES=("$TESTS"/*.swift) ;;
-    -*)     echo "unknown option: $arg" >&2; exit 2 ;;
-    *)      FILES+=("$arg") ;;
+    --fi)  SUITE="FoundationInternationalizationTests" ;;
+    --all) want_all=1 ;;
+    -*)    echo "unknown option: $arg" >&2; exit 2 ;;
+    *)     explicit+=("$arg") ;;
   esac
 done
+
+TESTS="$SRC/Tests/$SUITE"
+OUT="$SP/tests/$SUITE"
+
+# Files that are support code rather than suites (no @Test), plus one XCTest
+# performance suite that is `#if FOUNDATION_FRAMEWORK` and never builds here.
+is_helper() {
+  case "$(basename "$1" .swift)" in
+    ResourceUtilities|CalendarPerformanceTests|DiscreteFormatStyleTestUtilities|CurrentInternationalizationPreferencesActor)
+      return 0 ;;
+  esac
+  return 1
+}
+
+FILES=()
+if (( want_all )); then
+  for f in "$TESTS"/*.swift "$TESTS"/*/*.swift; do
+    [[ -f "$f" ]] || continue
+    is_helper "$f" || FILES+=("$f")
+  done
+else
+  FILES=("${explicit[@]}")
+fi
 if [[ ${#FILES[@]} -eq 0 ]]; then
-  FILES=(
-    "$TESTS/DataTests.swift" "$TESTS/DataIOTests.swift" "$TESTS/DateTests.swift"
-    "$TESTS/DateIntervalTests.swift" "$TESTS/DecimalTests.swift"
-    "$TESTS/IndexPathTests.swift" "$TESTS/JSONEncoderTests.swift"
-    "$TESTS/UUIDTests.swift" "$TESTS/URLTests.swift"
-    "$TESTS/GregorianCalendarTests.swift" "$TESTS/StringTests.swift"
-  )
+  if [[ "$SUITE" == "FoundationEssentialsTests" ]]; then
+    FILES=(
+      "$TESTS/DataTests.swift" "$TESTS/DataIOTests.swift" "$TESTS/DateTests.swift"
+      "$TESTS/DateIntervalTests.swift" "$TESTS/DecimalTests.swift"
+      "$TESTS/IndexPathTests.swift" "$TESTS/JSONEncoderTests.swift"
+      "$TESTS/UUIDTests.swift" "$TESTS/URLTests.swift"
+      "$TESTS/GregorianCalendarTests.swift" "$TESTS/StringTests.swift"
+    )
+  else
+    for f in "$TESTS"/*.swift "$TESTS"/*/*.swift; do
+      [[ -f "$f" ]] || continue
+      is_helper "$f" || FILES+=("$f")
+    done
+  fi
 fi
 
-# Compiled into every suite: the helpers SwiftPM would have made module-internal.
-SUPPORT=(
-  "$SRC/Tests/TestSupport/Utilities.swift"
-  "$TESTS/ResourceUtilities.swift"
-)
+# Compiled into every binary: the helpers SwiftPM would have made module-internal.
+SUPPORT=("$SRC/Tests/TestSupport/Utilities.swift")
+if [[ "$SUITE" == "FoundationEssentialsTests" ]]; then
+  SUPPORT+=("$TESTS/ResourceUtilities.swift")          # testData(forResource:)
+else
+  # `usingCurrentInternationalizationPreferences { }` and the discrete-format
+  # helpers: support code every FI suite may reach for.
+  SUPPORT+=("$TESTS/CurrentInternationalizationPreferencesActor.swift"
+            "$TESTS/Formatting/DiscreteFormatStyleTestUtilities.swift")
+fi
 
 # A suite that uses a type declared in another suite's *file*.  The borrowed file
 # brings its own @Test declarations, so the run is filtered to the suite asked for.
 cross_sources_for() {
   case "$(basename "$1" .swift)" in
     DataIOTests)              printf '%s\n' "$TESTS/DataTests.swift" ;;
+    FileManagerTests)         printf '%s\n' "$TESTS/FileManager/FilePlayground.swift" ;;
     URLTests)                 printf '%s\n' "$TESTS/FileManager/FilePlayground.swift"
                               printf '%s\n' "$TESTS/FileManager/FileManagerTests.swift" ;;
     NotificationCenterTests)  printf '%s\n' "$TESTS/NotificationCenterMessageTests.swift" ;;
@@ -97,7 +144,7 @@ cross_sources_for() {
 # as "URL" would match the module name `URLTests` and run everything).
 run_filter_for() {
   case "$(basename "$1" .swift)" in
-    DataIOTests|URLTests|NotificationCenterTests|PropertyListEncoderTests)
+    DataIOTests|URLTests|NotificationCenterTests|PropertyListEncoderTests|FileManagerTests)
       local n; n="$(basename "$1" .swift)"; echo "$n.$n" ;;
   esac
 }
@@ -105,8 +152,10 @@ run_filter_for() {
 # `testData(forResource:)` on Linux is
 # `dirname(argv[0])/swift-foundation_FoundationEssentialsTests-tool.resources/Resources`.
 RESOURCE_BUNDLE="$OUT/swift-foundation_FoundationEssentialsTests-tool.resources"
-mkdir -p "$RESOURCE_BUNDLE"
-ln -sfn "$TESTS/Resources" "$RESOURCE_BUNDLE/Resources"
+if [[ -d "$TESTS/Resources" ]]; then
+  mkdir -p "$RESOURCE_BUNDLE"
+  ln -sfn "$TESTS/Resources" "$RESOURCE_BUNDLE/Resources"
+fi
 
 mkdir -p "$OUT"
 cat > "$OUT/Runner.swift" <<'EOF'
@@ -127,7 +176,12 @@ COMMON=(
   -lTesting -l_TestingInterop -l_TestDiscovery -l_TestingInternals
   -I "$SP/reexport/swift" -I "$SP/swift"
   -L "$SP/reexport/lib" -L "$SP/lib"
-  -lFoundationEssentials -lFoundationInternationalization
+  # FoundationInternationalization *first*: it provides the concrete
+  # `_icuStringEncodingConvert`, which FoundationEssentials declares `dynamic`
+  # with a nil stub.  ELF symbol interposition takes the first definition in the
+  # executable's dependency order, so the order here is the difference between
+  # `String.data(using: .japaneseEUC)` working and answering nil.
+  -lFoundationInternationalization -lFoundationEssentials
   -l_FoundationCollections -l_FoundationCShims -l_FoundationICU
   -load-plugin-library "$TB/lib/swift/host/plugins/libTestingMacros.so"
   -Xcc "-fmodule-map-file=$SHIMS/module.modulemap"
@@ -140,6 +194,11 @@ COMMON=(
   -Xlinker -rpath -Xlinker "$SP/lib"
   -Xlinker -rpath -Xlinker "$AGORA_PREFIX/lib"
 )
+# The predicate suites need the Foundation macro plugin; everything else is
+# unaffected by it.  Say so once instead of failing per file if it is missing.
+if [[ -f "$MACRO_PLUGIN" ]]; then
+  COMMON+=(-load-plugin-library "$MACRO_PLUGIN")
+fi
 
 # Compile: the compiler runs on the host runtime (the wrapper puts it first), and
 # the macro plugin is a host build, so the host stdlib is on the path; the target
@@ -155,8 +214,7 @@ for file in "${FILES[@]}"; do
   bin="$OUT/$name"
   log="$OUT/$name.build.log"
 
-  # A helper file is not a suite: ResourceUtilities.swift has no @Test.
-  if [[ "$name" == "ResourceUtilities" ]]; then
+  if is_helper "$file"; then
     continue
   fi
 
@@ -206,4 +264,5 @@ for file in "${FILES[@]}"; do
 done
 
 echo
-echo "suites: $passed passed, $failed failed, $skipped did not build, $no_tests with no tests (logs in $OUT)"
+echo "${SUITE}: $passed passed, $failed failed, $skipped did not build, $no_tests with no tests"
+echo "(logs in $OUT)"
