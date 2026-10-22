@@ -148,7 +148,7 @@ precondition(o.isKind(of: NSObject.self))
 let sugar = NSObject()
 precondition(sugar.isKind(of: NSObject.self))
 precondition(!o.isKind(of: NSString.self))
-precondition((o.description() as String) == "NSObject")
+precondition(o.description == "NSObject")
 let cls = object_getClass(o)!
 precondition(String(cString: class_getName(cls)) == "NSObject")
 print("agora interop: ok")

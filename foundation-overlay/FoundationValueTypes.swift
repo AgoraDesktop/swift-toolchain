@@ -228,7 +228,7 @@ public struct Date: Comparable, Hashable, CustomStringConvertible {
     return lhs.timeIntervalSinceReferenceDate < rhs.timeIntervalSinceReferenceDate
   }
 
-  public var description: String { return (self as NSDate).description() }
+  public var description: String { return (self as NSDate).description }
 }
 
 extension Date: _ObjectiveCBridgeable {
@@ -1300,7 +1300,7 @@ public struct Decimal: Hashable, Comparable, CustomStringConvertible {
   public var isNaN: Bool { return _value._isNaN != 0 }
 
   public var description: String {
-    return NSDecimalNumber(decimal: _value).description() as String
+    return NSDecimalNumber(decimal: _value).description as String
   }
 
   public var doubleValue: Double {

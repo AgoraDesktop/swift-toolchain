@@ -798,12 +798,16 @@ extension NSObject: Equatable, Hashable {
   }
 
   public func hash(into hasher: inout Hasher) {
-    // `hash` alone is ambiguous here (it also names this method); the
-    // NSObject *class* still declares its getter as a method.
-    let value: Int = self.hash()
-    hasher.combine(value)
+    hasher.combine(self.hash)
   }
 }
+
+// Darwin's NSObject is `CustomStringConvertible` and
+// `CustomDebugStringConvertible`, and every Objective-C class inherits both, so
+// this one conformance closes the pair on the whole class hierarchy at once.
+// There is no body: NSObject.h declares `description` and `debugDescription` as
+// properties, which is exactly the imported shape these requirements take.
+extension NSObject: CustomStringConvertible, CustomDebugStringConvertible {}
 
 // `AnyHashable` bridges to `NSObject` (the `ObjectiveC` overlay's conformance on
 // Darwin). This is also what makes `[AnyHashable: Any]` - the imported shape of
@@ -948,7 +952,7 @@ public protocol _BridgedStoredNSError:
 }
 
 public extension _BridgedStoredNSError {
-  var description: String { return _nsError.description() }
+  var description: String { return _nsError.description }
 
   init?(_bridgedNSError error: NSError) {
     if (error.domain as String) != Self._nsErrorDomain { return nil }
