@@ -174,6 +174,10 @@ EOF
 COMMON=(
   -I "$TB/swift" -L "$TB/lib"
   -lTesting -l_TestingInterop -l_TestDiscovery -l_TestingInternals
+  # `import Foundation` here is the *spike's* re-export (FE + FI, no Clang
+  # Foundation).  The shipped P3 `Foundation` re-exports Agora's Clang module as
+  # well, and FoundationEssentials' package `Bundle` stub then collides with
+  # Agora's `NSBundle` (which imports as `Bundle`) under `@testable import.
   -I "$SP/reexport/swift" -I "$SP/swift"
   -L "$SP/reexport/lib" -L "$SP/lib"
   # FoundationInternationalization *first*: it provides the concrete

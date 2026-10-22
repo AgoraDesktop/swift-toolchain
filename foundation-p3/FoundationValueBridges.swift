@@ -469,7 +469,7 @@ extension DateInterval: _ObjectiveCBridgeable {
 /// (Darwin has the same table, in CoreFoundation's `CFCalendar`; the names it
 /// uses are the ones below, including `roc` for the Republic of China calendar
 /// and `islamic-tbla` for the tabular one.)
-private extension Calendar.Identifier {
+extension Calendar.Identifier {
   var _cfIdentifier: String {
     switch self {
     case .gregorian: return "gregorian"

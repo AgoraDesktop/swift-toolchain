@@ -246,7 +246,17 @@ cat > "$OPEN_SWIFT_TOOLCHAIN_DESTDIR/usr/bin/swiftc" <<'WRAPPER_EOF'
 bindir="$(dirname "$(readlink -f "$0")")"
 HOST_RUNTIME="${AGORA_SWIFT_HOST_RUNTIME:-$bindir/../lib/swift/host/runtime}"
 export LD_LIBRARY_PATH="$HOST_RUNTIME${LD_LIBRARY_PATH:+:$LD_LIBRARY_PATH}"
-exec -a swiftc "$bindir/swift-frontend" "$@"
+# P3: when the ported Foundation is installed (build-foundation-p3.sh --install),
+# the two C modules it imports live beside it.  An SDK would supply this include
+# search; here the driver does, and the test is on the directory so an install
+# that has not happened (or has been rolled back) changes nothing.
+stdbindir="$bindir/../lib/swift/linux"
+extra=()
+if [[ -d "$stdbindir/foundation-c-modules/FoundationCShims" ]]; then
+  extra+=(-Xcc -I"$stdbindir/foundation-c-modules/FoundationCShims"
+          -Xcc -I"$stdbindir/foundation-c-modules/FoundationICU")
+fi
+exec -a swiftc "$bindir/swift-frontend" "${extra[@]}" "$@"
 WRAPPER_EOF
 chmod +x "$OPEN_SWIFT_TOOLCHAIN_DESTDIR/usr/bin/swiftc"
 

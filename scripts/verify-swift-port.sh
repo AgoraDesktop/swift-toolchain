@@ -338,7 +338,7 @@ precondition(URL(string: "https://example.com/a")! as NSURL is NSURL)
 precondition(UUID(uuidString: "422658F6-E837-4B06-8557-916AA30918AF")!
              as NSUUID is NSUUID)
 precondition(IndexPath(indexes: [1, 2]) as NSIndexPath is NSIndexPath)
-precondition(TimeZone(identifier: "UTC") as NSTimeZone is NSTimeZone)
+precondition(TimeZone(identifier: "UTC")! as NSTimeZone is NSTimeZone)
 precondition(Locale(identifier: "en_US") as NSLocale is NSLocale)
 precondition(DateComponents(year: 2020) as NSDateComponents is NSDateComponents)
 precondition(PersonNameComponents() as NSPersonNameComponents is NSPersonNameComponents)
@@ -514,7 +514,7 @@ precondition(Decimal.nan.isNaN && !Decimal(1).isNaN)
 
 // Calendar date arithmetic and the formatter surface.
 var calendar = Calendar(identifier: "gregorian")
-calendar.timeZone = TimeZone(identifier: "UTC")
+calendar.timeZone = TimeZone(identifier: "UTC")!
 let epoch = Date(timeIntervalSinceReferenceDate: 0)
 let nextDay = calendar.date(byAdding: .day, value: 1, to: epoch)!
 precondition(nextDay.timeIntervalSinceReferenceDate == 86_400)

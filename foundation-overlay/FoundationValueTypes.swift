@@ -524,12 +524,19 @@ extension IndexPath: _ObjectiveCBridgeable {
 public struct TimeZone: Hashable {
   internal var _zone: NSTimeZone
 
-  public init(identifier: String) {
-    _zone = NSTimeZone(name: identifier) ?? NSTimeZone.system()!
+  /// Both initializers are failable, as Darwin's are: an identifier the time zone
+  /// database does not know is a *nil*, not a silent fall back to the system zone.
+  /// (FoundationEssentials' `TimeZone` spells them the same way, which matters
+  /// while the port moves from this overlay to that module: the same source has to
+  /// compile against both.)
+  public init?(identifier: String) {
+    guard let zone = NSTimeZone(name: identifier) else { return nil }
+    _zone = zone
   }
 
-  public init(secondsFromGMT seconds: Int) {
-    _zone = NSTimeZone(forSecondsFromGMT: seconds) ?? NSTimeZone.system()!
+  public init?(secondsFromGMT seconds: Int) {
+    guard let zone = NSTimeZone(forSecondsFromGMT: seconds) else { return nil }
+    _zone = zone
   }
 
   internal init(_ zone: NSTimeZone) { _zone = zone }
