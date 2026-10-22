@@ -89,10 +89,20 @@
 # and the argument IRGen bakes into it at layout 2 is the element's VWT rather than the
 # element's metadata.
 #
-# Next: read the statically emitted `_ContiguousArrayStorage` metadata in the binary
-# (its argument slot and the symbol IRGen stores there), then fix the prespecialized
-# class emission in `GenMeta.cpp` (`addGenericArguments`/`IsStaticSpecialization`) for
-# layout 2 — not the runtime, which is filling its own slots correctly.
+# Reading the binary narrows it once more: the only prespecialized storage metadata in
+# the program is `_ContiguousArrayStorage<AnyObject>`
+# (`$ss23_ContiguousArrayStorageCyypGMD`), and the storage the program actually uses
+# still never reaches the runtime instantiation path.  So the array's element slot is
+# filled by code the runtime diagnostics cannot see — a statically emitted metadata
+# object — and the value it holds is a witness table rather than the element metadata.
+#
+# WHERE THIS STANDS: five hypotheses have been tested and retired (class-pattern flags,
+# layout-string destroys, existential release, VWT selection, runtime argument
+# installation).  The remaining suspect is the compiler's static/prespecialized class
+# metadata emission, and the honest next step is no longer symbol archaeology but the
+# debugging infrastructure recorded in SWIFT-PORT-HANDOFF.md: a scratch `-O0 -g` build
+# of the stdlib (same tree, separate build dir), then read `Element.self`'s slot and the
+# emitting IR in one place.  Do not add more diagnostics to the release runtime.
 #
 #   AGORA_PREFIX, AGORA_SWIFT_ROOT, ... as in native-env.sh
 
