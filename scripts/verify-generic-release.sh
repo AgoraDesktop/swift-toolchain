@@ -18,11 +18,14 @@
 # class object (null isa). The release therefore messages a class with no dispatch
 # table and dies in libobjc2's slow path.
 #
-# A non-generic pure-Swift class is fine (`[Plain]` releases correctly), so the
-# defect is specific to generic pattern classes. The fix is a compiler/runtime
-# decision (make those metadata Swift class metadata, or make them class objects),
-# and this script is its acceptance test: it must pass before the value-type test
-# suites can run.
+# Narrowed further: a generic class WITH Objective-C ancestry (`Box<T>: NSObject`)
+# releases correctly, because it *is* a class object; the pure-Swift one is not.
+# The compiled IR contains no `objc_release` at all, so the Objective-C destroy is
+# coming from the element type's *value witnesses* — i.e. the witness table emitted
+# for a generic pure-Swift pattern class. The fix is therefore in the compiler's
+# class value-witness/metadata-kind decision (Swift witnesses for a Swift class, or
+# make the pattern a class object), and this script is its acceptance test: it must
+# pass before the value-type test suites can run.
 #
 #   AGORA_PREFIX, AGORA_SWIFT_ROOT, ... as in native-env.sh
 
