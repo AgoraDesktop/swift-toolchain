@@ -3988,7 +3988,7 @@ index 13d097c3..a467cdcf 100644
      return _nativeStorage.countAndCapacity.count
    }
 diff --git a/stdlib/public/runtime/Array.cpp b/stdlib/public/runtime/Array.cpp
-index ee94d7c6..47c2401e 100644
+index ee94d7c6..3af11074 100644
 --- a/stdlib/public/runtime/Array.cpp
 +++ b/stdlib/public/runtime/Array.cpp
 @@ -24,6 +24,9 @@
@@ -4001,7 +4001,7 @@ index ee94d7c6..47c2401e 100644
  #include "swift/Runtime/HeapObject.h"
  #include "swift/Runtime/Metadata.h"
  
-@@ -208,6 +211,24 @@ void swift_arrayDestroy(OpaqueValue *begin, size_t count, const Metadata *self)
+@@ -208,6 +211,27 @@ void swift_arrayDestroy(OpaqueValue *begin, size_t count, const Metadata *self)
  
    auto wtable = self->getValueWitnesses();
  
@@ -4019,8 +4019,11 @@ index ee94d7c6..47c2401e 100644
 +    const char *callerName = "?";
 +    if (dladdr(__builtin_return_address(0), &caller) && caller.dli_sname)
 +      callerName = caller.dli_sname;
-+    fprintf(stderr, "[arrayDestroy] caller=%p (%s)\n",
-+            __builtin_return_address(0), callerName);
++    fprintf(stderr, "[arrayDestroy] caller=%p (%s) begin=%p\n",
++            __builtin_return_address(0), callerName, (void *)begin);
++    fprintf(stderr, "[arrayDestroy] self words: %p %p %p %p\n",
++            ((void **)self)[0], ((void **)self)[1],
++            ((void **)self)[2], ((void **)self)[3]);
 +  }
 +
    // Nothing to do if the type is POD.

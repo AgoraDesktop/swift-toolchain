@@ -69,10 +69,20 @@
 #
 # i.e. the class's own witnesses are right, and the `self` the array storage passes to
 # `swift_arrayDestroy` is **not the element class's metadata** — it reads like a value
-# witness table.  The next probe prints that `self`'s first words (and the element
-# metadata the storage holds) to see which pointer the storage hands over at layout 2;
-# the bug is then in how the generic array storage passes/destroys its element metadata,
-# not in the class pattern.
+# witness table.  Printing its words settles that: `{0x303, 0x80000000, <fnptr>, ...}`
+# is a witness-table header (flags, size/stride, destroy...), and it lives in the
+# stdlib's static data, ~1.2 MB away from the pattern class metadata (0x...33d8 vs
+# 0x...8018).  So `Element.self` inside `_ContiguousArrayStorage.deinit` is reading the
+# element's **value witness table**, not its metadata: the generic-argument slot of a
+# layout-2 class is off by one word on the read (or the write) side, and the word it
+# lands on is the VWT that precedes a metadata object.
+#
+# That is the bug: **generic-argument access for a runtime-instantiated class at layout
+# 2**, not the class pattern, the VWT choice, the layout string, or array storage.
+# Next: print the descriptor's `getGenericArgumentOffset()` in `installGenericArguments`
+# (the write side) next to the offset IRGen uses when a class method reads `Element.self`
+# (the read side); whichever differs by one word is the fix, in `Metadata.h`'s
+# `getNonResilientImmediateMembersOffset()` or in IRGen's class layout.
 #
 #   AGORA_PREFIX, AGORA_SWIFT_ROOT, ... as in native-env.sh
 
