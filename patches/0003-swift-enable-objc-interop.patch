@@ -779,6 +779,32 @@ index 3f328e2a..58c2fe51 100644
    }
  
    if (!linkFilePath.empty()) {
+diff --git a/lib/DriverTool/swift_symbolgraph_extract_main.cpp b/lib/DriverTool/swift_symbolgraph_extract_main.cpp
+index b7dc667f..867bb60d 100644
+--- a/lib/DriverTool/swift_symbolgraph_extract_main.cpp
++++ b/lib/DriverTool/swift_symbolgraph_extract_main.cpp
+@@ -137,7 +137,20 @@ int swift_symbolgraph_extract_main(ArrayRef<const char *> Args,
+   }
+   Invocation.setImportSearchPaths(ImportSearchPaths);
+ 
+-  Invocation.getLangOptions().EnableObjCInterop = Target.isOSDarwin();
++  // Agora: the driver enables Objective-C interop for this platform
++  // (lib/Driver/ToolChains.cpp: on for Darwin and Linux) and the frontend
++  // defaults the runtime vendor to GNUstep for a non-Darwin ELF target
++  // (CompilerInvocation.cpp).  This tool builds its invocation by hand instead
++  // of going through the driver, so without the same rule an imported Clang
++  // module is built in C mode: headers guarded by `#if defined(__OBJC__)`
++  // (CoreFoundation's CFBridgingTypes.h) declare nothing, and every Foundation
++  // declaration that names NSInteger/NSRange fails to import.  It would also
++  // hand the importer the Apple runtime for a non-Darwin target.
++  Invocation.getLangOptions().EnableObjCInterop =
++      Target.isOSDarwin() || Target.isOSLinux();
++  if (!Target.isOSDarwin() && Target.isOSBinFormatELF())
++    Invocation.getLangOptions().ObjCRuntimeVendorKind =
++        ObjCRuntimeVendor::GNUstep;
+   Invocation.getLangOptions().DebuggerSupport = true;
+ 
+   Invocation.getLangOptions().enableFeature(Feature::LibraryEvolution);
 diff --git a/lib/Frontend/CompilerInvocation.cpp b/lib/Frontend/CompilerInvocation.cpp
 index 38cc5101..6e5b3fbb 100644
 --- a/lib/Frontend/CompilerInvocation.cpp

@@ -43,6 +43,16 @@ the flip below.
 [`../SWIFT-PORT-HANDOFF.md`](../SWIFT-PORT-HANDOFF.md) has the full state, the
 change inventory, and the next steps.
 
+The **Foundation parity gate** ([`scripts/verify-foundation-parity.sh`](scripts/verify-foundation-parity.sh))
+measures the Swift surface against the reference: it extracts a symbol graph for
+`Foundation`, `FoundationEssentials` and `FoundationInternationalization` from the
+bootstrap toolchain and for Agora's Foundation from the installed one, then diffs
+symbols, conformances and extras. `--report` prints the diff, `--check` enforces
+[`parity/foundation-allowlist.txt`](parity/foundation-allowlist.txt) (which shrinks
+as landings happen), and `--update-allowlist` rewrites the counts after one. The
+baseline and the staging are in
+[`../SWIFT-FOUNDATION-PARITY-PLAN.md`](../SWIFT-FOUNDATION-PARITY-PLAN.md).
+
 ### Layout 2 (the GNUstep class ABI) is the installed default
 
 Since the 2026-10-17 flip, the installed `swiftc` and its stdlib are built with
@@ -58,6 +68,7 @@ toolchain like this:
 
 ```sh
 swift-toolchain/scripts/verify-swift-port.sh          # language/runtime + interop
+swift-toolchain/scripts/verify-foundation-parity.sh --check   # Foundation surface
 swift-interop-probe/scripts/run-native-probe.sh       # both probes, 17/17
 
 T=~/.agora-swift/toolchain/usr
@@ -312,11 +323,13 @@ a selector).
 C99 and narrows `__u64`→`off_t`, an error in C++.
 
 The other two patches are not header fixes, but they are applied the same way:
-`0003-swift-enable-objc-interop.patch` is the whole Swift fork change set
-(interop by default, the GNUstep runtime family, the class-object predicate -
-including "a runtime-instantiated pattern class without ObjC ancestry is not a
-class object", and "an `@_swift_native_objc_runtime_base` storage class is
-one" - and the `NSUInteger` encodings of the collection cores), and
+`0003-swift-enable-objc-interop.patch` is the whole Swift fork change set (63
+files, ~2,620 insertions: interop by default, the GNUstep runtime family, the
+class-object predicate - including "a runtime-instantiated pattern class without
+ObjC ancestry is not a class object", and "an `@_swift_native_objc_runtime_base`
+storage class is one" - the `NSUInteger` encodings of the collection cores, and
+`swift-symbolgraph-extract` taking the driver's interop/vendor defaults so an
+imported Clang module builds in Objective-C mode), and
 `0004-libdispatch-overlay-non-interop.patch` keeps libdispatch's `Dispatch`
 overlay on the non-interop ABI it has always had (its shims are not
 interop-aware), and `0005-libagora-base-allocWithZone.patch` adds the

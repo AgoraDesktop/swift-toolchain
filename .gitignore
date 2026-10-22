@@ -1,0 +1,3 @@
+# Python bytecode from the parity tooling (scripts/*.py).
+__pycache__/
+*.pyc
