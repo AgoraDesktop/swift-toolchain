@@ -108,6 +108,10 @@ looks up *by name*: `ObjCBool` (so every `BOOL` imports as `Bool`, and
 `isEqual:`/`isKind(of:)`/`boolValue` are `Bool`), `Selector` (so `#selector`
 works) and `NSZone`. The Foundation overlay re-exports it.
 
+`CGFloat` is a `public typealias CGFloat = Double` in the overlay: the Clang
+importer maps the C typedef to a Swift type of that name looked up in the
+imported module, so without it `let w: CGFloat` is "cannot find type".
+
 `libagora-objc` defines `BOOL` the way Apple does - `signed char` on x86_64,
 `bool` on arm64 - so its type encoding (`c`, or `B` on arm64) agrees with the
 one Swift emits for `Bool`. libobjc2 keys typed dispatch on (selector, encoding),

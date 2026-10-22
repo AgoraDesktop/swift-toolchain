@@ -40,6 +40,14 @@
 // `import Foundation` brings them into scope the way it does on Darwin.
 @_exported import ObjectiveC
 
+/// `CGFloat` is `double` on this platform (Agora's `CGBase.h` says so, and
+/// Apple's is under `__LP64__`).  The Clang importer maps the C typedef to a
+/// Swift type of this name, looked up in this module, so declaring the alias
+/// here is what makes `CGFloat` appear in imported signatures and in Swift
+/// source -- without it the importer drops the type and says "cannot find type
+/// 'CGFloat'".
+public typealias CGFloat = Double
+
 // MARK: - String
 
 extension String: _ObjectiveCBridgeable {
