@@ -799,6 +799,42 @@ index 38cc5101..6e5b3fbb 100644
    if (const Arg *A = Args.getLastArg(OPT_objc_runtime_vendor)) {
      auto vendor =
          llvm::StringSwitch<std::optional<ObjCRuntimeVendor>>(A->getValue())
+diff --git a/lib/IRGen/ClassLayout.h b/lib/IRGen/ClassLayout.h
+index ac3d81f4..85acb53b 100644
+--- a/lib/IRGen/ClassLayout.h
++++ b/lib/IRGen/ClassLayout.h
+@@ -98,7 +98,19 @@ enum class ClassMetadataFlags {
+ 
+   /// Is the class implemented by an \c @_objcImplementation extension? If so,
+   /// we should generate pure ObjC-compatible metadata.
+-  ClassHasObjCImplementation = (1 << 7)
++  ClassHasObjCImplementation = (1 << 7),
++
++  /// Does the class inherit an imported Objective-C class whose instance size
++  /// clang cannot know, because its ivars exist only in the @implementation?
++  ///
++  /// The GNUstep class object carries absolute ivar offsets and instance size,
++  /// so a superclass of unknown size cannot be laid out at compile time.  The
++  /// class is emitted as *late-bound* instead -- `instance_size` 0, which
++  /// libobjc2's objc_compute_ivar_offsets() reads as "compute from the
++  /// superclass and the ivar list" (the same path clang's non-fragile emission
++  /// uses) -- and the size the runtime computes is mirrored into Swift's own
++  /// `InstanceSize` word by swift_objcClassLayoutDidChange().
++  ClassHasOpaqueObjCSuperclass = (1 << 8)
+ };
+ 
+ using ClassMetadataOptions = OptionSet<ClassMetadataFlags>;
+@@ -218,6 +230,10 @@ public:
+ 
+   /// Returns true if the class is implemented by an \c @_objcImplementation
+   /// extension, and therefore should not have any Swift-specific metadata.
++  bool hasOpaqueObjCSuperclass() const {
++    return Options.contains(ClassMetadataFlags::ClassHasOpaqueObjCSuperclass);
++  }
++
+   bool hasObjCImplementation() const {
+     return Options.contains(ClassMetadataFlags::ClassHasObjCImplementation);
+   }
 diff --git a/lib/IRGen/ClassMetadataVisitor.h b/lib/IRGen/ClassMetadataVisitor.h
 index ff55aa81..bd91f291 100644
 --- a/lib/IRGen/ClassMetadataVisitor.h
@@ -879,10 +915,10 @@ index ff55aa81..bd91f291 100644
      addPointer();
    }
 diff --git a/lib/IRGen/GenClass.cpp b/lib/IRGen/GenClass.cpp
-index 931a45cb..a490a5b9 100644
+index 931a45cb..5858313e 100644
 --- a/lib/IRGen/GenClass.cpp
 +++ b/lib/IRGen/GenClass.cpp
-@@ -212,6 +212,41 @@ namespace {
+@@ -212,6 +212,55 @@ namespace {
        }
      }
  
@@ -893,6 +929,13 @@ index 931a45cb..a490a5b9 100644
 +          dyn_cast_or_null<clang::ObjCInterfaceDecl>(theClass->getClangDecl());
 +      if (!interface || !interface->hasDefinition() ||
 +          interface->isInvalidDecl())
++        return Size(0);
++      // A class whose @interface declares no ivars may still have ivars
++      // synthesized in its @implementation, and a module importer never sees
++      // those.  Treat "no ivars in the header" as an unknown size so the
++      // subclass is laid out at load time; for a class that really has none
++      // (NSObject) the delta is zero anyway.
++      if (interface->ivar_empty())
 +        return Size(0);
 +      auto &clangContext = IGM.getClangASTContext();
 +      return Size(
@@ -913,6 +956,13 @@ index 931a45cb..a490a5b9 100644
 +    /// superclass).
 +    void addPaddingForObjCSuperclass(ClassDecl *theClass) {
 +      Size superSize = getImportedObjCSuperclassSize(theClass);
++      if (superSize.getValue() == 0) {
++        // The superclass's ivars exist only in its @implementation, so clang
++        // cannot lay it out for us.  Emit the class late-bound and let
++        // libobjc2 compute the layout from the runtime superclass.
++        Options |= ClassMetadataFlags::ClassHasOpaqueObjCSuperclass;
++        return;
++      }
 +      if (superSize.getValue() <= CurSize.getValue())
 +        return;
 +      auto paddingSize = superSize - CurSize;
@@ -924,7 +974,7 @@ index 931a45cb..a490a5b9 100644
      /// If 'superclass' is true, we're adding fields for one of our
      /// superclasses, which means they become part of the struct
      /// layout calculation, but are not actually added to any of
-@@ -228,8 +263,13 @@ namespace {
+@@ -228,8 +277,13 @@ namespace {
                                 bool superclass) {
        if (theClass->hasClangNode() && !theClass->isForeignReferenceType()) {
          Options |= ClassMetadataFlags::ClassHasObjCAncestry;
@@ -939,7 +989,7 @@ index 931a45cb..a490a5b9 100644
        }
  
        if (theClass->isNativeNSObjectSubclass()) {
-@@ -1342,6 +1382,21 @@ namespace {
+@@ -1342,6 +1396,21 @@ namespace {
      void buildMetaclassStub() {
        assert(FieldLayout && "can't build a metaclass from a category");
  
@@ -961,7 +1011,7 @@ index 931a45cb..a490a5b9 100644
        std::optional<CanType> specializedGenericType =
            getSpecializedGenericType();
  
-@@ -1491,7 +1546,45 @@ namespace {
+@@ -1491,7 +1560,45 @@ namespace {
        return buildGlobalVariable(fields, "_CATEGORY_", /*const*/ true,
                                   internalLinkage);
      }
@@ -1008,7 +1058,111 @@ index 931a45cb..a490a5b9 100644
      llvm::Constant *emitProtocol() {
        ConstantInitBuilder builder(IGM);
        auto fields = builder.beginStruct();
-@@ -2137,6 +2230,310 @@ namespace {
+@@ -1550,6 +1657,103 @@ namespace {
+                                  weakLinkage);
+     }
+ 
++    /// `struct objc_protocol_method_description_list`:
++    ///
++    ///   { int count; int size; { SEL selector; char *types; } methods[count]; }
++    ///
++    /// A protocol describes its methods; it does not implement them, so there is
++    /// no IMP.  The selector is a name-and-type record, the same shape a method
++    /// list uses, so `-conformsToSelector:` style lookups can compare it.
++    llvm::Constant *buildGNUstepProtocolMethodList(
++        ArrayRef<MethodDescriptor> methods, StringRef nameBase) {
++      SmallVector<GNUstepMethodEntry, 8> entries;
++      collectGNUstepMethods(methods, entries);
++      if (entries.empty())
++        return null();
++
++      ConstantInitBuilder builder(IGM);
++      auto fields = builder.beginStruct();
++      fields.addInt32(entries.size());
++      // sizeof(struct objc_protocol_method_description): SEL + types.
++      fields.addInt32(2 * IGM.getPointerSize().getValue());
++
++      auto array = fields.beginArray();
++      for (auto &entry : entries) {
++        auto elt = array.beginStruct();
++        elt.add(irgen::getAddrOfGNUstepSelector(IGM, entry.selector,
++                                                entry.typeEncoding));
++        elt.add(entry.types ? entry.types
++                            : llvm::ConstantPointerNull::get(IGM.Int8PtrTy));
++        elt.finishAndAddTo(array);
++      }
++      array.finishAndAddTo(fields);
++
++      return buildGlobalVariable(fields, nameBase, /*isConst*/ true,
++                                 llvm::GlobalVariable::InternalLinkage);
++    }
++
++    /// Emit a protocol in GNUstep's shape and place it in `__objc_protocols`,
++    /// where libobjc2's loader registers it (`registerProtocol`, then
++    /// `objc_getProtocol` finds it by name).
++    ///
++    ///   struct objc_protocol {
++    ///     id isa;                    // protocol_version_gsv2 until load
++    ///     char *name;
++    ///     struct objc_protocol_list *protocol_list;
++    ///     struct objc_protocol_method_description_list *instance_methods;
++    ///     struct objc_protocol_method_description_list *class_methods;
++    ///     struct objc_protocol_method_description_list *optional_instance_methods;
++    ///     struct objc_protocol_method_description_list *optional_class_methods;
++    ///     struct objc_property_list *properties;
++    ///     struct objc_property_list *optional_properties;
++    ///     struct objc_property_list *class_properties;
++    ///     struct objc_property_list *optional_class_properties;
++    ///   };
++    ///
++    /// The symbol is clang's `._OBJC_PROTOCOL_<name>` with weak linkage, so the
++    /// module that declares the protocol and a module that merely references it
++    /// end up sharing one object, exactly as two clang-compiled translation
++    /// units do.
++    llvm::Constant *emitGNUstepProtocol() {
++      ConstantInitBuilder builder(IGM);
++      auto fields = builder.beginStruct();
++      llvm::SmallString<64> nameBuffer;
++      auto name = getEntityName(nameBuffer);
++
++      // isa: protocol_version_gsv2 (4), the marker libobjc2's protocol
++      // registration expects before it hands out the object.
++      fields.addInt(IGM.SizeTy, 4);
++      // name
++      fields.add(IGM.getAddrOfGlobalString(name,
++                                           CStringSectionType::ObjCClassName));
++      // protocol_list: the inherited protocols, in GNUstep's linked-list shape.
++      fields.add(buildGNUstepProtocolList());
++      // required instance / class, optional instance / class
++      fields.add(buildGNUstepProtocolMethodList(InstanceMethods,
++                                                "_GNUstep_PROTO_METHODS_"));
++      fields.add(buildGNUstepProtocolMethodList(ClassMethods,
++                                                "_GNUstep_PROTO_CLASS_METHODS_"));
++      fields.add(buildGNUstepProtocolMethodList(OptInstanceMethods,
++                                                "_GNUstep_PROTO_OPT_METHODS_"));
++      fields.add(buildGNUstepProtocolMethodList(OptClassMethods,
++                                                "_GNUstep_PROTO_OPT_CLASS_METHODS_"));
++      // properties (required/optional, class/instance).  Swift's protocol
++      // properties are not emitted as GNUstep property lists yet; null is what
++      // a protocol that declares none has anyway.
++      for (unsigned i = 0; i != 4; ++i)
++        fields.addNullPointer(IGM.Int8PtrTy);
++
++      auto *gv = fields.finishAndCreateGlobal(
++          ("._OBJC_PROTOCOL_" + Twine(name)).str(), IGM.getPointerAlignment(),
++          /*constant*/ false, llvm::GlobalVariable::WeakAnyLinkage);
++      gv->setSection("__objc_protocols");
++      gv->setVisibility(llvm::GlobalValue::DefaultVisibility);
++      // The loader reaches the record through the section, not through a
++      // reference; keep it in the object file.
++      IGM.addUsedGlobal(gv);
++      return gv;
++    }
++
+     void emitRODataFields(ConstantStructBuilder &b,
+                           ForMetaClass_t forMeta,
+                           HasUpdateCallback_t hasUpdater) {
+@@ -2137,6 +2341,307 @@ namespace {
            });
      }
  
@@ -1257,18 +1411,15 @@ index 931a45cb..a490a5b9 100644
 +    /// with no `next` and `count` first, so the same bytes would be read as a
 +    /// pointer.
 +    llvm::Constant *buildGNUstepProtocolList() {
-+      // Only protocols that come from Clang can go in this list.  Their record
-+      // is clang's `struct objc_protocol` in the defining image, which is the
-+      // object libobjc2 registered, so a conformance check (a pointer compare)
-+      // succeeds.  A protocol *declared in Swift* is still emitted as Apple's
-+      // `protocol_t` and is not registered at all, so putting one here would
-+      // hand libobjc2 a record it cannot read -- `init_protocols` would see the
-+      // Apple layout's null `isa` as a protocol version.  Emitting a GNUstep
-+      // record for those is a separate piece of work; until then they are left
-+      // out rather than corrupted.
++      // Every entry is a `struct objc_protocol *`: for an imported protocol that
++      // is clang's record in the defining image, and for a protocol declared in
++      // Swift it is the GNUstep record this module emits (see
++      // emitGNUstepProtocol()).  Either way libobjc2 can read it, and a
++      // conformance check -- a pointer compare -- succeeds, because
++      // objc_getProtocol() answers with the same registered object.
 +      SmallVector<ProtocolDecl *, 8> protocols;
 +      for (auto *protocol : Protocols)
-+        if (protocol->isObjC() && protocol->hasClangNode())
++        if (protocol->isObjC())
 +          protocols.push_back(protocol);
 +      if (protocols.empty())
 +        return null();
@@ -1319,7 +1470,7 @@ index 931a45cb..a490a5b9 100644
      /*** Properties ********************************************************/
  
      /// Properties need to be collected in the properties list.
-@@ -2607,7 +3004,7 @@ bool IRGenModule::hasObjCResilientClassStub(ClassDecl *D) {
+@@ -2607,7 +3112,7 @@ bool IRGenModule::hasObjCResilientClassStub(ClassDecl *D) {
           strategy == ClassMetadataStrategy::Singleton);
  #endif
  
@@ -1328,7 +1479,7 @@ index 931a45cb..a490a5b9 100644
  }
  
  llvm::Constant *IRGenModule::emitObjCResilientClassStub(
-@@ -2716,6 +3113,65 @@ llvm::Constant *irgen::emitClassPrivateData(IRGenModule &IGM, ClassDecl *cls) {
+@@ -2716,6 +3221,65 @@ llvm::Constant *irgen::emitClassPrivateData(IRGenModule &IGM, ClassDecl *cls) {
        IGM, TaggedUnion<ClassDecl *, std::pair<ClassDecl *, CanType>>(cls));
  }
  
@@ -1394,7 +1545,7 @@ index 931a45cb..a490a5b9 100644
  std::pair<Size, Size>
  irgen::emitClassPrivateDataFields(IRGenModule &IGM,
                                    ConstantStructBuilder &init,
-@@ -2771,6 +3227,27 @@ llvm::Constant *irgen::emitCategoryData(IRGenModule &IGM,
+@@ -2771,7 +3335,37 @@ llvm::Constant *irgen::emitCategoryData(IRGenModule &IGM,
    return builder.emitCategory();
  }
    
@@ -1420,9 +1571,19 @@ index 931a45cb..a490a5b9 100644
 +}
 +
  /// Emit the metadata for an ObjC protocol.
++llvm::Constant *irgen::emitGNUstepProtocolData(IRGenModule &IGM,
++                                               ProtocolDecl *proto) {
++  assert(proto->isObjC() && "not an objc protocol");
++  PrettyStackTraceDecl stackTraceRAII("emitting GNUstep protocol metadata for",
++                                      proto);
++  ClassDataBuilder builder(IGM, proto);
++  return builder.emitGNUstepProtocol();
++}
++
  llvm::Constant *irgen::emitObjCProtocolData(IRGenModule &IGM,
                                              ProtocolDecl *proto) {
-@@ -2967,6 +3444,22 @@ IRGenModule::getClassMetadataStrategy(const ClassDecl *theClass) {
+   assert(proto->isObjC() && "not an objc protocol");
+@@ -2967,6 +3561,22 @@ IRGenModule::getClassMetadataStrategy(const ClassDecl *theClass) {
      if (!Context.LangOpts.EnableObjCInterop)
        return ClassMetadataStrategy::Singleton;
  
@@ -1446,7 +1607,7 @@ index 931a45cb..a490a5b9 100644
      // pattern unconditionally.
      auto deploymentAvailability =
 diff --git a/lib/IRGen/GenClass.h b/lib/IRGen/GenClass.h
-index 2c8eb868..0cb5f856 100644
+index 2c8eb868..d98f45b3 100644
 --- a/lib/IRGen/GenClass.h
 +++ b/lib/IRGen/GenClass.h
 @@ -125,6 +125,22 @@ namespace irgen {
@@ -1472,7 +1633,7 @@ index 2c8eb868..0cb5f856 100644
    
    llvm::Constant *emitClassPrivateData(IRGenModule &IGM, ClassDecl *theClass);
  
-@@ -140,6 +156,11 @@ namespace irgen {
+@@ -140,7 +156,15 @@ namespace irgen {
                                        Size &metaclassRODataOffset,
                                        Size &totalSize);
    llvm::Constant *emitCategoryData(IRGenModule &IGM, ExtensionDecl *ext);
@@ -1482,8 +1643,12 @@ index 2c8eb868..0cb5f856 100644
 +  /// pointer list Apple's `category_t` needs.
 +  llvm::Constant *emitGNUstepCategoryData(IRGenModule &IGM, ExtensionDecl *ext);
    llvm::Constant *emitObjCProtocolData(IRGenModule &IGM, ProtocolDecl *ext);
++/// Emit a protocol in the GNUstep `struct objc_protocol` shape, in the
++/// `__objc_protocols` section, where libobjc2 registers it.
++llvm::Constant *emitGNUstepProtocolData(IRGenModule &IGM, ProtocolDecl *ext);
  
    /// Emit a projection from a class instance to the first tail allocated
+   /// element.
 diff --git a/lib/IRGen/GenDecl.cpp b/lib/IRGen/GenDecl.cpp
 index 380c55b2..f04a1b8b 100644
 --- a/lib/IRGen/GenDecl.cpp
@@ -1559,7 +1724,7 @@ index 380c55b2..f04a1b8b 100644
  }
  
 diff --git a/lib/IRGen/GenMeta.cpp b/lib/IRGen/GenMeta.cpp
-index b6c69353..a937796a 100644
+index b6c69353..ec7673cf 100644
 --- a/lib/IRGen/GenMeta.cpp
 +++ b/lib/IRGen/GenMeta.cpp
 @@ -144,6 +144,25 @@ void IRGenModule::setTrueConstGlobal(llvm::GlobalVariable *var) {
@@ -1669,7 +1834,7 @@ index b6c69353..a937796a 100644
            B.addNullPointer(IGM.TypeMetadataPtrTy);
            return;
          }
-@@ -4551,11 +4614,81 @@ namespace {
+@@ -4551,11 +4614,89 @@ namespace {
  
      llvm::Constant *getROData() { return emitClassPrivateData(IGM, Target); }
  
@@ -1689,7 +1854,15 @@ index b6c69353..a937796a 100644
 +      assert(!isPureObjC());
 +      // libobjc2 allocates from this field, so it has to be the real instance
 +      // size rather than Apple's packed InstanceAddressPoint/InstanceSize pair.
-+      if (asImpl().hasFixedLayout())
++      //
++      // Zero means "not known statically".  libobjc2's
++      // objc_compute_ivar_offsets() reads a value <= 0 as the late-bound form:
++      // it starts at the runtime superclass's size, walks the ivar list, and
++      // writes the absolute offsets back through the ivar-offset globals.  That
++      // is how a class whose Objective-C superclass has no layout in its header
++      // is laid out (see ClassHasOpaqueObjCSuperclass).
++      if (asImpl().hasFixedLayout() &&
++          !asImpl().getFieldLayout().hasOpaqueObjCSuperclass())
 +        B.addInt(IGM.SizeTy, asImpl().getFieldLayout().getSize().getValue());
 +      else
 +        B.addInt(IGM.SizeTy, 0);
@@ -1752,7 +1925,7 @@ index b6c69353..a937796a 100644
      }
  
      void addClassDataPointer() {
-@@ -4800,6 +4933,21 @@ namespace {
+@@ -4800,6 +4941,21 @@ namespace {
        addClassFlags();
        addClassDataPointer();
        addMetaclass();
@@ -1774,7 +1947,7 @@ index b6c69353..a937796a 100644
      }
  
      void addRelocationFunction() {
-@@ -4831,19 +4979,59 @@ namespace {
+@@ -4831,19 +4987,59 @@ namespace {
      }
  
      void addClassDataPointer() {
@@ -1838,7 +2011,7 @@ index b6c69353..a937796a 100644
      void createMetadataAccessFunction() {
        assert(IGM.getClassMetadataStrategy(Target)
               == ClassMetadataStrategy::Resilient);
-@@ -4885,6 +5073,19 @@ namespace {
+@@ -4885,6 +5081,19 @@ namespace {
        HasDependentMetadata = true;
      }
  
@@ -1858,7 +2031,7 @@ index b6c69353..a937796a 100644
      void layoutHeader() {
        // @_objcImplementation on true (non-ObjC) generic classes doesn't make
        // much sense, and we haven't updated this builder to handle it.
-@@ -4902,26 +5103,63 @@ namespace {
+@@ -4902,26 +5111,63 @@ namespace {
        // ClassFlags Flags;
        B.addInt32((uint32_t) getClassFlags(Target));
  
@@ -1925,7 +2098,7 @@ index b6c69353..a937796a 100644
      }
  
      llvm::Constant *emitNominalTypeDescriptor() {
-@@ -4962,7 +5200,10 @@ namespace {
+@@ -4962,7 +5208,10 @@ namespace {
      }
  
      bool hasExtraDataPattern() {
@@ -1937,7 +2110,7 @@ index b6c69353..a937796a 100644
      }
  
      PartialPattern buildExtraDataPattern() {
-@@ -4977,8 +5218,8 @@ namespace {
+@@ -4977,8 +5226,8 @@ namespace {
        Size classROData = Size(0);
        Size metaclassROData = Size(0);
  
@@ -1948,7 +2121,7 @@ index b6c69353..a937796a 100644
          B.fillPlaceholderWithInt(*MetaclassObjectOffset, IGM.Int16Ty,
            IGM.getOffsetInWords(patternOffset + subB.getNextOffsetFromGlobal()));
          addMetaclassObject(subB);
-@@ -4992,13 +5233,20 @@ namespace {
+@@ -4992,13 +5241,20 @@ namespace {
            IGM.getOffsetInWords(patternOffset + roDataPoints.second));
          classROData = patternOffset + roDataPoints.first;
          metaclassROData = patternOffset + roDataPoints.second;
@@ -1970,7 +2143,7 @@ index b6c69353..a937796a 100644
          auto getRODataAtOffset = [&] (Size offset) -> llvm::Constant * {
            auto t0 = llvm::ConstantExpr::getBitCast(global, IGM.Int8PtrTy);
            llvm::Constant *indices[] = {llvm::ConstantInt::get(IGM.Int32Ty, offset.getValue())};
-@@ -5029,6 +5277,34 @@ namespace {
+@@ -5029,6 +5285,34 @@ namespace {
        B.addInt(IGM.IntPtrTy, 0);
      }
  
@@ -2005,7 +2178,7 @@ index b6c69353..a937796a 100644
      bool hasImmediateMembersPattern() {
        // TODO: use the real field offsets if they're known statically.
        return false;
-@@ -5270,7 +5546,18 @@ namespace {
+@@ -5270,7 +5554,18 @@ namespace {
  
      uint64_t getClassDataPointerHasSwiftMetadataBits() {
        assert(!isPureObjC());
@@ -2025,7 +2198,7 @@ index b6c69353..a937796a 100644
      }
  
      llvm::Constant *getROData() {
-@@ -5470,7 +5757,7 @@ void irgen::emitClassMetadata(IRGenModule &IGM, ClassDecl *classDecl,
+@@ -5470,7 +5765,7 @@ void irgen::emitClassMetadata(IRGenModule &IGM, ClassDecl *classDecl,
    // If the class does not require dynamic initialization, or if it only
    // requires dynamic initialization on a newer Objective-C runtime, add it
    // to the Objective-C class list.
@@ -2034,7 +2207,7 @@ index b6c69353..a937796a 100644
      switch (strategy) {
      case ClassMetadataStrategy::Resilient:
        // We always emit a resilient class stub as long as -enable-objc-interop
-@@ -5623,11 +5910,11 @@ void irgen::emitSpecializedGenericClassMetadata(IRGenModule &IGM, CanType type,
+@@ -5623,11 +5918,11 @@ void irgen::emitSpecializedGenericClassMetadata(IRGenModule &IGM, CanType type,
    builder.layout();
  
    IGM.defineTypeMetadata(type, /*isPattern=*/false,
@@ -2052,7 +2225,7 @@ index b6c69353..a937796a 100644
  }
  
 diff --git a/lib/IRGen/GenObjC.cpp b/lib/IRGen/GenObjC.cpp
-index e60b660a..624895dd 100644
+index e60b660a..f808b034 100644
 --- a/lib/IRGen/GenObjC.cpp
 +++ b/lib/IRGen/GenObjC.cpp
 @@ -284,11 +284,32 @@ llvm::Constant *IRGenModule::getAddrOfObjCMethodName(StringRef selector) {
@@ -2136,7 +2309,7 @@ index e60b660a..624895dd 100644
  /// Get or create an Objective-C selector reference.  Always returns
  /// an i8**.  The design is that the compiler will emit a load of this
  /// pointer, and the linker will ensure that pointer is unique.
-@@ -617,20 +660,47 @@ llvm::Constant *IRGenModule::emitClangProtocolObject(
+@@ -617,20 +660,52 @@ llvm::Constant *IRGenModule::emitClangProtocolObject(
      const clang::ObjCProtocolDecl *objcProtocol) {
    auto clangProto =
        clang::CodeGen::emitObjCProtocolObject(getClangCGM(), objcProtocol);
@@ -2182,13 +2355,18 @@ index e60b660a..624895dd 100644
 +    }
 +  }
 +
-+  // Emit the real definition.
-+  auto record = cast<llvm::GlobalVariable>(emitObjCProtocolData(*this, proto));
++  // Emit the real definition.  In the GNUstep class layout a protocol is a
++  // `struct objc_protocol` in `__objc_protocols`, not Apple's `protocol_t` in
++  // `objc_protolist`, so libobjc2 registers it and a class's protocol list can
++  // name it by pointer.
++  auto record = cast<llvm::GlobalVariable>(
++      usesGNUstepClassABI() ? emitGNUstepProtocolData(*this, proto)
++                            : emitObjCProtocolData(*this, proto));
 +
    // Move the new record to the placeholder's position.
    Module.removeGlobalVariable(record);
    Module.insertGlobalVariable(std::next(placeholder->getIterator()), record);
-@@ -748,10 +818,17 @@ std::string IRGenModule::getObjCSelectorName(SILDeclRef method) {
+@@ -748,10 +823,17 @@ std::string IRGenModule::getObjCSelectorName(SILDeclRef method) {
    return Selector(method).str().str();
  }
  
@@ -2207,7 +2385,7 @@ index e60b660a..624895dd 100644
    // Allocate an objc_super struct.
    Address super = IGF.createAlloca(IGF.IGM.ObjCSuperStructTy,
                                     IGF.IGM.getPointerAlignment(),
-@@ -762,7 +839,9 @@ static llvm::Value *emitSuperArgument(IRGenFunction &IGF,
+@@ -762,7 +844,9 @@ static llvm::Value *emitSuperArgument(IRGenFunction &IGF,
    
    // Generate the search class object reference.
    llvm::Value *searchValue;
@@ -2218,7 +2396,7 @@ index e60b660a..624895dd 100644
      searchValue = emitClassHeapMetadataRef(IGF, searchClass,
                                             MetadataValueType::ObjCClass,
                                             MetadataState::Complete,
-@@ -831,11 +910,68 @@ Callee irgen::getObjCMethodCallee(IRGenFunction &IGF,
+@@ -831,11 +915,68 @@ Callee irgen::getObjCMethodCallee(IRGenFunction &IGF,
           "objc method call must be to a func/initializer/getter/setter/dtor");
  
    auto kind = methodInfo.getMessageKind();
@@ -2288,7 +2466,7 @@ index e60b660a..624895dd 100644
      sig.setType(getMsgSendSuperTy(IGF.IGM, sig.getType(), indirectResult));
    }
  
-@@ -869,15 +1005,35 @@ Callee irgen::getObjCMethodCallee(IRGenFunction &IGF,
+@@ -869,15 +1010,35 @@ Callee irgen::getObjCMethodCallee(IRGenFunction &IGF,
      }
    }();
  
@@ -2332,7 +2510,7 @@ index e60b660a..624895dd 100644
  
    llvm::Value *receiverValue;
    if (auto searchType = methodInfo.getSearchType()) {
-@@ -888,10 +1044,6 @@ Callee irgen::getObjCMethodCallee(IRGenFunction &IGF,
+@@ -888,10 +1049,6 @@ Callee irgen::getObjCMethodCallee(IRGenFunction &IGF,
      receiverValue = selfValue;
    }
  
@@ -2343,7 +2521,7 @@ index e60b660a..624895dd 100644
    auto fn =
        FunctionPointer::forDirect(FunctionPointer::Kind::Function, messenger,
                                   /*secondaryValue*/ nullptr, sig,
-@@ -1333,10 +1485,23 @@ static llvm::Constant *getObjCEncodingForTypes(IRGenModule &IGM,
+@@ -1333,10 +1490,23 @@ static llvm::Constant *getObjCEncodingForTypes(IRGenModule &IGM,
    // Return type.
    {
      auto clangType = IGM.getClangType(resultType.getASTType());
@@ -2371,7 +2549,7 @@ index e60b660a..624895dd 100644
    }
  
    // Parameter types.
-@@ -1423,6 +1588,7 @@ irgen::emitObjCMethodDescriptorParts(IRGenModule &IGM,
+@@ -1423,6 +1593,7 @@ irgen::emitObjCMethodDescriptorParts(IRGenModule &IGM,
                                       bool concrete) {
    ObjCMethodDescriptor descriptor{};
    Selector selector(method);
@@ -2379,7 +2557,7 @@ index e60b660a..624895dd 100644
    
    /// The first element is the selector.
    descriptor.selectorRef = IGM.getAddrOfObjCMethodName(selector.str());
-@@ -1461,6 +1627,7 @@ ObjCMethodDescriptor
+@@ -1461,6 +1632,7 @@ ObjCMethodDescriptor
  irgen::emitObjCGetterDescriptorParts(IRGenModule &IGM, VarDecl *property) {
    Selector getterSel(property, Selector::ForGetter);
    ObjCMethodDescriptor descriptor{};
@@ -2387,7 +2565,7 @@ index e60b660a..624895dd 100644
    descriptor.selectorRef = IGM.getAddrOfObjCMethodName(getterSel.str());
    
    auto clangType = getObjCPropertyType(IGM, property);
-@@ -1494,6 +1661,7 @@ irgen::emitObjCGetterDescriptorParts(IRGenModule &IGM,
+@@ -1494,6 +1666,7 @@ irgen::emitObjCGetterDescriptorParts(IRGenModule &IGM,
                                       SubscriptDecl *subscript) {
    Selector getterSel(subscript, Selector::ForGetter);
    ObjCMethodDescriptor descriptor{};
@@ -2395,7 +2573,7 @@ index e60b660a..624895dd 100644
    descriptor.selectorRef = IGM.getAddrOfObjCMethodName(getterSel.str());
  
    auto methodTy =
-@@ -1533,6 +1701,7 @@ irgen::emitObjCSetterDescriptorParts(IRGenModule &IGM,
+@@ -1533,6 +1706,7 @@ irgen::emitObjCSetterDescriptorParts(IRGenModule &IGM,
  
    Selector setterSel(property, Selector::ForSetter);
    ObjCMethodDescriptor descriptor{};
@@ -2403,7 +2581,7 @@ index e60b660a..624895dd 100644
    descriptor.selectorRef = IGM.getAddrOfObjCMethodName(setterSel.str());
    
    auto &clangASTContext = IGM.getClangASTContext();
-@@ -1578,6 +1747,7 @@ irgen::emitObjCSetterDescriptorParts(IRGenModule &IGM,
+@@ -1578,6 +1752,7 @@ irgen::emitObjCSetterDescriptorParts(IRGenModule &IGM,
  
    Selector setterSel(subscript, Selector::ForSetter);
    ObjCMethodDescriptor descriptor{};
@@ -4097,7 +4275,7 @@ index 3033532e..f1883b0b 100644
  
  #endif // defined(__GNUSTEP_RUNTIME__) || defined(__OBJC_GNUSTEP_RUNTIME_ABI__)
 diff --git a/stdlib/public/runtime/Metadata.cpp b/stdlib/public/runtime/Metadata.cpp
-index c35e8430..bdcfac64 100644
+index c35e8430..3b8f0e50 100644
 --- a/stdlib/public/runtime/Metadata.cpp
 +++ b/stdlib/public/runtime/Metadata.cpp
 @@ -148,7 +148,7 @@ Metadata *TargetSingletonMetadataInitialization<InProcess>::allocate(
@@ -4474,7 +4652,37 @@ index c35e8430..bdcfac64 100644
      theMetaclass->Superclass = theSuperMetaclass;
    }
  #endif
-@@ -3763,7 +3956,7 @@ static void initClassFieldOffsetVector(ClassMetadata *self,
+@@ -3756,6 +3949,29 @@ static void initClassVTable(ClassMetadata *self,
+   }
+ }
+ 
++#if SWIFT_OBJC_CLASS_LAYOUT == 2
++/// libobjc2 has just computed a class's layout from its runtime superclass
++/// (`objc_compute_ivar_offsets`), which is what happens when the class was
++/// emitted late-bound because its Objective-C superclass had no layout in a
++/// header.
++///
++/// A Swift class object in this layout carries the size twice: the GNUstep
++/// `instance_size` that libobjc2 allocates from, and Swift's own
++/// `InstanceSize`, which hides it.  Mirror the former into the latter, so
++/// `getInstanceSize()` -- used by `MemoryLayout`, by reflection and by a Swift
++/// subclass laying out its own fields -- agrees with what the object actually
++/// is.
++extern "C" SWIFT_RUNTIME_EXPORT
++void swift_objcClassLayoutDidChange(void *classObject) {
++  auto *cls = static_cast<ClassMetadata *>(classObject);
++  // Only Swift metadata has the GNUstep ABI-version marker; a plain
++  // Objective-C class object has 2, and nothing past its 17 words exists.
++  if (cls->ABIVersion != SWIFT_GNUSTEP_CLASS_ABI_VERSION)
++    return;
++  cls->setInstanceSize(cls->getObjCInstanceSize());
++}
++#endif
++
+ static void initClassFieldOffsetVector(ClassMetadata *self,
+                                        size_t numFields,
+                                        const TypeLayout * const *fieldTypes,
+@@ -3763,7 +3979,7 @@ static void initClassFieldOffsetVector(ClassMetadata *self,
    // Start layout by appending to a standard heap object header.
    size_t size, alignMask;
  
@@ -4483,7 +4691,7 @@ index c35e8430..bdcfac64 100644
    ClassROData *rodata = getROData(self);
  #endif
  
-@@ -3772,19 +3965,28 @@ static void initClassFieldOffsetVector(ClassMetadata *self,
+@@ -3772,19 +3988,28 @@ static void initClassFieldOffsetVector(ClassMetadata *self,
      auto *super = self->Superclass;
  
      // This is straightforward if the superclass is Swift.
@@ -4514,7 +4722,7 @@ index c35e8430..bdcfac64 100644
        alignMask = 0xF; // malloc alignment guarantee
      }
  #endif
-@@ -3796,7 +3998,7 @@ static void initClassFieldOffsetVector(ClassMetadata *self,
+@@ -3796,7 +4021,7 @@ static void initClassFieldOffsetVector(ClassMetadata *self,
      alignMask = heapLayout.flags.getAlignmentMask();
    }
  
@@ -4523,7 +4731,7 @@ index c35e8430..bdcfac64 100644
    // Ensure that Objective-C does layout starting from the right
    // offset.  This needs to exactly match the superclass rodata's
    // InstanceSize in cases where the compiler decided that we didn't
-@@ -3838,14 +4040,20 @@ static void initClassFieldOffsetVector(ClassMetadata *self,
+@@ -3838,14 +4063,20 @@ static void initClassFieldOffsetVector(ClassMetadata *self,
    self->setInstanceSize(size);
    self->setInstanceAlignMask(alignMask);
  
@@ -4546,7 +4754,7 @@ index c35e8430..bdcfac64 100644
  /// Non-generic classes only. Initialize the Objective-C ivar descriptors and
  /// field offset globals. Does *not* register the class with the Objective-C
  /// runtime; that must be done by the caller.
-@@ -4153,7 +4361,7 @@ _swift_initClassMetadataImpl(ClassMetadata *self,
+@@ -4153,7 +4384,7 @@ _swift_initClassMetadataImpl(ClassMetadata *self,
  
    initClassFieldOffsetVector(self, numFields, fieldTypes, fieldOffsets);
  
@@ -4555,7 +4763,7 @@ index c35e8430..bdcfac64 100644
    auto *description = self->getDescription();
    if (description->isGeneric()) {
      assert(!description->hasObjCResilientClassStub());
-@@ -4182,6 +4390,33 @@ _swift_initClassMetadataImpl(ClassMetadata *self,
+@@ -4182,6 +4413,33 @@ _swift_initClassMetadataImpl(ClassMetadata *self,
        swift_instantiateObjCClass(self);
      }
    }
@@ -4589,7 +4797,7 @@ index c35e8430..bdcfac64 100644
  #else
    assert(!self->getDescription()->hasObjCResilientClassStub());
  #endif
-@@ -4210,7 +4445,7 @@ swift::swift_initClassMetadata2(ClassMetadata *self,
+@@ -4210,7 +4468,7 @@ swift::swift_initClassMetadata2(ClassMetadata *self,
                                        /*allowDependency*/ true);
  }
  
@@ -4598,7 +4806,7 @@ index c35e8430..bdcfac64 100644
  
  static SWIFT_CC(swift) MetadataDependency
  _swift_updateClassMetadataImpl(ClassMetadata *self,
-@@ -4219,6 +4454,7 @@ _swift_updateClassMetadataImpl(ClassMetadata *self,
+@@ -4219,6 +4477,7 @@ _swift_updateClassMetadataImpl(ClassMetadata *self,
                                 const TypeLayout * const *fieldTypes,
                                 size_t *fieldOffsets,
                                 bool allowDependency) {
@@ -4606,7 +4814,7 @@ index c35e8430..bdcfac64 100644
    bool requiresUpdate = SWIFT_RUNTIME_WEAK_CHECK(_objc_realizeClassFromSwift);
  
    // If we're on a newer runtime, we're going to be initializing the
-@@ -4271,6 +4507,45 @@ _swift_updateClassMetadataImpl(ClassMetadata *self,
+@@ -4271,6 +4530,45 @@ _swift_updateClassMetadataImpl(ClassMetadata *self,
    }
  
    return MetadataDependency();
@@ -4652,7 +4860,7 @@ index c35e8430..bdcfac64 100644
  }
  
  void swift::swift_updateClassMetadata(ClassMetadata *self,
-@@ -4294,6 +4569,9 @@ swift::swift_updateClassMetadata2(ClassMetadata *self,
+@@ -4294,6 +4592,9 @@ swift::swift_updateClassMetadata2(ClassMetadata *self,
                                          /*allowDependency*/ true);
  }
  
@@ -4662,7 +4870,7 @@ index c35e8430..bdcfac64 100644
  Class
  swift::swift_updatePureObjCClassMetadata(Class cls,
                                           ClassLayoutFlags flags,
-@@ -5932,7 +6210,7 @@ template <> SWIFT_USED void Metadata::dump() const {
+@@ -5932,7 +6233,7 @@ template <> SWIFT_USED void Metadata::dump() const {
      printf("\n");
    }
  

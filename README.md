@@ -175,9 +175,12 @@ not slide anything. A Swift class whose superclass comes from Objective-C
 therefore adds that class's `getASTObjCInterfaceLayout()` size as padding before
 its own fields (gated on `usesGNUstepClassABI()`, the same computation clang's
 `CGObjCGNU` backend makes). A subclass of `NSView` is 504 bytes with its first
-field at 496 instead of 16 bytes with the field at 8. The one case it cannot
-cover is a superclass whose ivars exist only in its `@implementation` (invisible
-to a module importer) — see
+field at 496 instead of 16 bytes with the field at 8. A superclass whose ivars
+exist only in its `@implementation` (invisible to a module importer) is emitted
+late-bound instead: `instance_size` 0, which libobjc2's
+`objc_compute_ivar_offsets()` computes from the runtime superclass, with the
+result mirrored into Swift's own `InstanceSize` word by a weak
+`swift_objcClassLayoutDidChange()` hook — see
 [`../SWIFT-GNUSTEP-CLASS-ABI.md`](../SWIFT-GNUSTEP-CLASS-ABI.md) §3 and
 [`../swift-interop-probe/conformance/FINDINGS.md`](../swift-interop-probe/conformance/FINDINGS.md).
 
@@ -187,8 +190,9 @@ for a Swift delegate. The list is GNUstep's `struct objc_protocol_list`
 (`{ next, count, list[] }`), and an imported protocol's entry is clang's
 `._OBJC_PROTOCOL_<name>` record from the defining image — the object libobjc2
 registered, and the one a pointer-compare conformance check needs. A protocol
-declared in Swift is still Apple-shaped and is left out of the list. See
-[`../SWIFT-PORT-HANDOFF.md`](../SWIFT-PORT-HANDOFF.md) §2.24.
+declared in Swift is emitted in the same GNUstep shape, in `__objc_protocols`,
+so the runtime registers that one too. See
+[`../SWIFT-PORT-HANDOFF.md`](../SWIFT-PORT-HANDOFF.md) §2.24 and §2.27.
 
 `SWIFT_OBJC_CLASS_LAYOUT` is a CMake cache option (`CMakeLists.txt`; empty = the
 platform default from `Runtime/Config.h`, which is 2), and
