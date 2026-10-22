@@ -879,10 +879,67 @@ index ff55aa81..bd91f291 100644
      addPointer();
    }
 diff --git a/lib/IRGen/GenClass.cpp b/lib/IRGen/GenClass.cpp
-index 931a45cb..a1bea0b7 100644
+index 931a45cb..a490a5b9 100644
 --- a/lib/IRGen/GenClass.cpp
 +++ b/lib/IRGen/GenClass.cpp
-@@ -1342,6 +1342,21 @@ namespace {
+@@ -212,6 +212,41 @@ namespace {
+       }
+     }
+ 
++    /// The size clang gives an imported Objective-C class, or 0 when it cannot
++    /// be known (no `@interface` definition to lay out).
++    Size getImportedObjCSuperclassSize(ClassDecl *theClass) {
++      auto *interface =
++          dyn_cast_or_null<clang::ObjCInterfaceDecl>(theClass->getClangDecl());
++      if (!interface || !interface->hasDefinition() ||
++          interface->isInvalidDecl())
++        return Size(0);
++      auto &clangContext = IGM.getClangASTContext();
++      return Size(
++          clangContext.getASTObjCInterfaceLayout(interface).getSize()
++              .getQuantity());
++    }
++
++    /// Reserve the space an imported Objective-C superclass occupies.
++    ///
++    /// Darwin's Objective-C runtime slides a Swift class's `instance_size` and
++    /// its ivar offsets when it realizes the class, so Swift may lay its own
++    /// fields out from the isa word and let the runtime move them. libobjc2
++    /// does no such thing: the class object's `instance_size` is what it
++    /// allocates from, and its ivar offsets are what it reports, so the
++    /// imported superclass's size has to be part of the static layout. That is
++    /// also how clang's own GNUstep backend computes `instance_size`
++    /// (CGObjCGNU uses `getASTObjCInterfaceLayout` for both the class and its
++    /// superclass).
++    void addPaddingForObjCSuperclass(ClassDecl *theClass) {
++      Size superSize = getImportedObjCSuperclassSize(theClass);
++      if (superSize.getValue() <= CurSize.getValue())
++        return;
++      auto paddingSize = superSize - CurSize;
++      auto &opaqueTI = IGM.getOpaqueStorageTypeInfo(paddingSize, Alignment(1));
++      auto element = ElementLayout::getIncomplete(opaqueTI);
++      addField(element, LayoutStrategy::Universal);
++    }
++
+     /// If 'superclass' is true, we're adding fields for one of our
+     /// superclasses, which means they become part of the struct
+     /// layout calculation, but are not actually added to any of
+@@ -228,8 +263,13 @@ namespace {
+                                bool superclass) {
+       if (theClass->hasClangNode() && !theClass->isForeignReferenceType()) {
+         Options |= ClassMetadataFlags::ClassHasObjCAncestry;
+-        if (!theClass->getObjCImplementationDecl())
++        if (!theClass->getObjCImplementationDecl()) {
++          // The GNUstep runtime does not slide the class metadata, so an
++          // imported superclass's size is part of our static layout.
++          if (IGM.usesGNUstepClassABI() && superclass)
++            addPaddingForObjCSuperclass(theClass);
+           return;
++        }
+       }
+ 
+       if (theClass->isNativeNSObjectSubclass()) {
+@@ -1342,6 +1382,21 @@ namespace {
      void buildMetaclassStub() {
        assert(FieldLayout && "can't build a metaclass from a category");
  
@@ -904,7 +961,7 @@ index 931a45cb..a1bea0b7 100644
        std::optional<CanType> specializedGenericType =
            getSpecializedGenericType();
  
-@@ -1491,7 +1506,45 @@ namespace {
+@@ -1491,7 +1546,45 @@ namespace {
        return buildGlobalVariable(fields, "_CATEGORY_", /*const*/ true,
                                   internalLinkage);
      }
@@ -951,7 +1008,7 @@ index 931a45cb..a1bea0b7 100644
      llvm::Constant *emitProtocol() {
        ConstantInitBuilder builder(IGM);
        auto fields = builder.beginStruct();
-@@ -2137,6 +2190,263 @@ namespace {
+@@ -2137,6 +2230,310 @@ namespace {
            });
      }
  
@@ -1186,6 +1243,52 @@ index 931a45cb..a1bea0b7 100644
 +                                 llvm::GlobalVariable::InternalLinkage);
 +    }
 +
++    /// `struct objc_protocol_list` in GNUstep's shape:
++    ///
++    ///   struct objc_protocol_list {
++    ///     struct objc_protocol_list *next;
++    ///     size_t count;
++    ///     struct objc_protocol *list[count];
++    ///   };
++    ///
++    /// libobjc2 walks this from `struct objc_class::protocols`
++    /// (`class_copyProtocolList`, `class_conformsToProtocol`).  It cannot reuse
++    /// `buildProtocolList`: Apple's `protocol_list_t` is `{ count, refs[] }`,
++    /// with no `next` and `count` first, so the same bytes would be read as a
++    /// pointer.
++    llvm::Constant *buildGNUstepProtocolList() {
++      // Only protocols that come from Clang can go in this list.  Their record
++      // is clang's `struct objc_protocol` in the defining image, which is the
++      // object libobjc2 registered, so a conformance check (a pointer compare)
++      // succeeds.  A protocol *declared in Swift* is still emitted as Apple's
++      // `protocol_t` and is not registered at all, so putting one here would
++      // hand libobjc2 a record it cannot read -- `init_protocols` would see the
++      // Apple layout's null `isa` as a protocol version.  Emitting a GNUstep
++      // record for those is a separate piece of work; until then they are left
++      // out rather than corrupted.
++      SmallVector<ProtocolDecl *, 8> protocols;
++      for (auto *protocol : Protocols)
++        if (protocol->isObjC() && protocol->hasClangNode())
++          protocols.push_back(protocol);
++      if (protocols.empty())
++        return null();
++
++      ConstantInitBuilder builder(IGM);
++      auto fields = builder.beginStruct();
++      // next
++      fields.addNullPointer(IGM.Int8PtrTy);
++      // count
++      fields.addInt(IGM.SizeTy, protocols.size());
++
++      auto array = fields.beginArray(IGM.Int8PtrTy);
++      for (auto *protocol : protocols)
++        array.add(buildProtocolRef(protocol));
++      array.finishAndAddTo(fields);
++
++      return buildGlobalVariable(fields, "_GNUstep_PROTOCOLS_", /*isConst*/ true,
++                                 llvm::GlobalVariable::InternalLinkage);
++    }
++
 +    /// Emit the globals a GNUstep-ABI class object points at directly.
 +    void emitGNUstepFields(GNUstepClassData &out) {
 +      out.Name = buildName();
@@ -1194,6 +1297,7 @@ index 931a45cb..a1bea0b7 100644
 +      out.ClassMethods =
 +          buildGNUstepMethodList(ClassMethods, "_GNUstep_CLASS_METHODS_");
 +      out.Ivars = buildGNUstepIvarList();
++      out.Protocols = buildGNUstepProtocolList();
 +
 +      auto ctor = IGM.getAddrOfIVarInitDestroy(getClass(),
 +                                               /*destroy*/ false,
@@ -1215,7 +1319,7 @@ index 931a45cb..a1bea0b7 100644
      /*** Properties ********************************************************/
  
      /// Properties need to be collected in the properties list.
-@@ -2607,7 +2917,7 @@ bool IRGenModule::hasObjCResilientClassStub(ClassDecl *D) {
+@@ -2607,7 +3004,7 @@ bool IRGenModule::hasObjCResilientClassStub(ClassDecl *D) {
           strategy == ClassMetadataStrategy::Singleton);
  #endif
  
@@ -1224,7 +1328,7 @@ index 931a45cb..a1bea0b7 100644
  }
  
  llvm::Constant *IRGenModule::emitObjCResilientClassStub(
-@@ -2716,6 +3026,65 @@ llvm::Constant *irgen::emitClassPrivateData(IRGenModule &IGM, ClassDecl *cls) {
+@@ -2716,6 +3113,65 @@ llvm::Constant *irgen::emitClassPrivateData(IRGenModule &IGM, ClassDecl *cls) {
        IGM, TaggedUnion<ClassDecl *, std::pair<ClassDecl *, CanType>>(cls));
  }
  
@@ -1290,7 +1394,7 @@ index 931a45cb..a1bea0b7 100644
  std::pair<Size, Size>
  irgen::emitClassPrivateDataFields(IRGenModule &IGM,
                                    ConstantStructBuilder &init,
-@@ -2771,6 +3140,27 @@ llvm::Constant *irgen::emitCategoryData(IRGenModule &IGM,
+@@ -2771,6 +3227,27 @@ llvm::Constant *irgen::emitCategoryData(IRGenModule &IGM,
    return builder.emitCategory();
  }
    
@@ -1318,7 +1422,7 @@ index 931a45cb..a1bea0b7 100644
  /// Emit the metadata for an ObjC protocol.
  llvm::Constant *irgen::emitObjCProtocolData(IRGenModule &IGM,
                                              ProtocolDecl *proto) {
-@@ -2967,6 +3357,22 @@ IRGenModule::getClassMetadataStrategy(const ClassDecl *theClass) {
+@@ -2967,6 +3444,22 @@ IRGenModule::getClassMetadataStrategy(const ClassDecl *theClass) {
      if (!Context.LangOpts.EnableObjCInterop)
        return ClassMetadataStrategy::Singleton;
  
@@ -1455,7 +1559,7 @@ index 380c55b2..f04a1b8b 100644
  }
  
 diff --git a/lib/IRGen/GenMeta.cpp b/lib/IRGen/GenMeta.cpp
-index b6c69353..34a73d2d 100644
+index b6c69353..a937796a 100644
 --- a/lib/IRGen/GenMeta.cpp
 +++ b/lib/IRGen/GenMeta.cpp
 @@ -144,6 +144,25 @@ void IRGenModule::setTrueConstGlobal(llvm::GlobalVariable *var) {
@@ -1565,7 +1669,7 @@ index b6c69353..34a73d2d 100644
            B.addNullPointer(IGM.TypeMetadataPtrTy);
            return;
          }
-@@ -4551,11 +4614,76 @@ namespace {
+@@ -4551,11 +4614,81 @@ namespace {
  
      llvm::Constant *getROData() { return emitClassPrivateData(IGM, Target); }
  
@@ -1611,7 +1715,12 @@ index b6c69353..34a73d2d 100644
 +    }
 +
 +    void addGNUstepSiblingClass() { B.addNullPointer(IGM.Int8PtrTy); }
-+    void addGNUstepProtocols() { B.addNullPointer(IGM.Int8PtrTy); }
++    void addGNUstepProtocols() {
++      // A GNUstep `struct objc_protocol_list` (linked list, count first) built
++      // from the class's explicit @objc conformances.  Null when there are
++      // none; `B.add` accepts the typed null constant.
++      B.add(IGM.getGNUstepClassData(Target).Protocols);
++    }
 +    void addGNUstepExtraData() { B.addNullPointer(IGM.Int8PtrTy); }
 +
 +    void addGNUstepABIVersion() {
@@ -1643,7 +1752,7 @@ index b6c69353..34a73d2d 100644
      }
  
      void addClassDataPointer() {
-@@ -4800,6 +4928,21 @@ namespace {
+@@ -4800,6 +4933,21 @@ namespace {
        addClassFlags();
        addClassDataPointer();
        addMetaclass();
@@ -1665,7 +1774,7 @@ index b6c69353..34a73d2d 100644
      }
  
      void addRelocationFunction() {
-@@ -4831,19 +4974,59 @@ namespace {
+@@ -4831,19 +4979,59 @@ namespace {
      }
  
      void addClassDataPointer() {
@@ -1729,7 +1838,7 @@ index b6c69353..34a73d2d 100644
      void createMetadataAccessFunction() {
        assert(IGM.getClassMetadataStrategy(Target)
               == ClassMetadataStrategy::Resilient);
-@@ -4885,6 +5068,19 @@ namespace {
+@@ -4885,6 +5073,19 @@ namespace {
        HasDependentMetadata = true;
      }
  
@@ -1749,7 +1858,7 @@ index b6c69353..34a73d2d 100644
      void layoutHeader() {
        // @_objcImplementation on true (non-ObjC) generic classes doesn't make
        // much sense, and we haven't updated this builder to handle it.
-@@ -4902,26 +5098,63 @@ namespace {
+@@ -4902,26 +5103,63 @@ namespace {
        // ClassFlags Flags;
        B.addInt32((uint32_t) getClassFlags(Target));
  
@@ -1816,7 +1925,7 @@ index b6c69353..34a73d2d 100644
      }
  
      llvm::Constant *emitNominalTypeDescriptor() {
-@@ -4962,7 +5195,10 @@ namespace {
+@@ -4962,7 +5200,10 @@ namespace {
      }
  
      bool hasExtraDataPattern() {
@@ -1828,7 +1937,7 @@ index b6c69353..34a73d2d 100644
      }
  
      PartialPattern buildExtraDataPattern() {
-@@ -4977,8 +5213,8 @@ namespace {
+@@ -4977,8 +5218,8 @@ namespace {
        Size classROData = Size(0);
        Size metaclassROData = Size(0);
  
@@ -1839,7 +1948,7 @@ index b6c69353..34a73d2d 100644
          B.fillPlaceholderWithInt(*MetaclassObjectOffset, IGM.Int16Ty,
            IGM.getOffsetInWords(patternOffset + subB.getNextOffsetFromGlobal()));
          addMetaclassObject(subB);
-@@ -4992,13 +5228,20 @@ namespace {
+@@ -4992,13 +5233,20 @@ namespace {
            IGM.getOffsetInWords(patternOffset + roDataPoints.second));
          classROData = patternOffset + roDataPoints.first;
          metaclassROData = patternOffset + roDataPoints.second;
@@ -1861,7 +1970,7 @@ index b6c69353..34a73d2d 100644
          auto getRODataAtOffset = [&] (Size offset) -> llvm::Constant * {
            auto t0 = llvm::ConstantExpr::getBitCast(global, IGM.Int8PtrTy);
            llvm::Constant *indices[] = {llvm::ConstantInt::get(IGM.Int32Ty, offset.getValue())};
-@@ -5029,6 +5272,34 @@ namespace {
+@@ -5029,6 +5277,34 @@ namespace {
        B.addInt(IGM.IntPtrTy, 0);
      }
  
@@ -1896,7 +2005,7 @@ index b6c69353..34a73d2d 100644
      bool hasImmediateMembersPattern() {
        // TODO: use the real field offsets if they're known statically.
        return false;
-@@ -5270,7 +5541,18 @@ namespace {
+@@ -5270,7 +5546,18 @@ namespace {
  
      uint64_t getClassDataPointerHasSwiftMetadataBits() {
        assert(!isPureObjC());
@@ -1916,7 +2025,7 @@ index b6c69353..34a73d2d 100644
      }
  
      llvm::Constant *getROData() {
-@@ -5470,7 +5752,7 @@ void irgen::emitClassMetadata(IRGenModule &IGM, ClassDecl *classDecl,
+@@ -5470,7 +5757,7 @@ void irgen::emitClassMetadata(IRGenModule &IGM, ClassDecl *classDecl,
    // If the class does not require dynamic initialization, or if it only
    // requires dynamic initialization on a newer Objective-C runtime, add it
    // to the Objective-C class list.
@@ -1925,7 +2034,7 @@ index b6c69353..34a73d2d 100644
      switch (strategy) {
      case ClassMetadataStrategy::Resilient:
        // We always emit a resilient class stub as long as -enable-objc-interop
-@@ -5623,11 +5905,11 @@ void irgen::emitSpecializedGenericClassMetadata(IRGenModule &IGM, CanType type,
+@@ -5623,11 +5910,11 @@ void irgen::emitSpecializedGenericClassMetadata(IRGenModule &IGM, CanType type,
    builder.layout();
  
    IGM.defineTypeMetadata(type, /*isPattern=*/false,
@@ -1943,7 +2052,7 @@ index b6c69353..34a73d2d 100644
  }
  
 diff --git a/lib/IRGen/GenObjC.cpp b/lib/IRGen/GenObjC.cpp
-index e60b660a..09c4a752 100644
+index e60b660a..624895dd 100644
 --- a/lib/IRGen/GenObjC.cpp
 +++ b/lib/IRGen/GenObjC.cpp
 @@ -284,11 +284,32 @@ llvm::Constant *IRGenModule::getAddrOfObjCMethodName(StringRef selector) {
@@ -2027,7 +2136,59 @@ index e60b660a..09c4a752 100644
  /// Get or create an Objective-C selector reference.  Always returns
  /// an i8**.  The design is that the compiler will emit a load of this
  /// pointer, and the linker will ensure that pointer is unique.
-@@ -748,10 +791,17 @@ std::string IRGenModule::getObjCSelectorName(SILDeclRef method) {
+@@ -617,20 +660,47 @@ llvm::Constant *IRGenModule::emitClangProtocolObject(
+     const clang::ObjCProtocolDecl *objcProtocol) {
+   auto clangProto =
+       clang::CodeGen::emitObjCProtocolObject(getClangCGM(), objcProtocol);
+-  updateProtocolRefs(*this, objcProtocol, clangProto);
++  // `updateProtocolRefs` rewrites the entries of Apple's `protocol_refs_t`
++  // array (operand 2 of `protocol_t`) to point at Swift's own records.  A
++  // GNUstep `struct objc_protocol` has a linked `objc_protocol_list` there
++  // instead, and clang's own emission already references the canonical
++  // `struct objc_protocol` objects, so there is nothing to rewrite.
++  if (!usesGNUstepClassABI())
++    updateProtocolRefs(*this, objcProtocol, clangProto);
+   return clangProto;
+ }
+ 
+ void IRGenModule::emitLazyObjCProtocolDefinition(ProtocolDecl *proto) {
+-  // Emit the real definition.
+-  auto record = cast<llvm::GlobalVariable>(emitObjCProtocolData(*this, proto));
+-
+   // Find the placeholder.  It should always still be a placeholder,
+   // because it was created as an anonymous symbol and nobody should
+   // ever be randomly messing with those.
+   auto placeholder =
+     cast<llvm::GlobalVariable>(ObjCProtocols.find(proto)->second.record);
+ 
++  // In the GNUstep class layout an imported protocol already has an object in
++  // the image that defines it: clang emits it into `__objc_protocols` as a
++  // `struct objc_protocol` and libobjc2 registers *that* one.  Swift's own
++  // record is Apple's `protocol_t` in `objc_protolist`/`objc_protorefs` -
++  // different shape, different section, and a different object from the one
++  // the runtime knows.  Conformance checks compare protocol *pointers*, so the
++  // record has to be clang's object, not a Swift copy.
++  if (usesGNUstepClassABI() && proto->hasClangNode()) {
++    if (auto *clangProto =
++            dyn_cast_or_null<clang::ObjCProtocolDecl>(proto->getClangDecl())) {
++      if (clangProto->hasDefinition()) {
++        auto *record = cast<llvm::GlobalVariable>(
++            emitClangProtocolObject(clangProto));
++        placeholder->replaceAllUsesWith(
++            llvm::ConstantExpr::getBitCast(record, Int8PtrTy));
++        placeholder->eraseFromParent();
++        return;
++      }
++    }
++  }
++
++  // Emit the real definition.
++  auto record = cast<llvm::GlobalVariable>(emitObjCProtocolData(*this, proto));
++
+   // Move the new record to the placeholder's position.
+   Module.removeGlobalVariable(record);
+   Module.insertGlobalVariable(std::next(placeholder->getIterator()), record);
+@@ -748,10 +818,17 @@ std::string IRGenModule::getObjCSelectorName(SILDeclRef method) {
    return Selector(method).str().str();
  }
  
@@ -2046,7 +2207,7 @@ index e60b660a..09c4a752 100644
    // Allocate an objc_super struct.
    Address super = IGF.createAlloca(IGF.IGM.ObjCSuperStructTy,
                                     IGF.IGM.getPointerAlignment(),
-@@ -762,7 +812,9 @@ static llvm::Value *emitSuperArgument(IRGenFunction &IGF,
+@@ -762,7 +839,9 @@ static llvm::Value *emitSuperArgument(IRGenFunction &IGF,
    
    // Generate the search class object reference.
    llvm::Value *searchValue;
@@ -2057,7 +2218,7 @@ index e60b660a..09c4a752 100644
      searchValue = emitClassHeapMetadataRef(IGF, searchClass,
                                             MetadataValueType::ObjCClass,
                                             MetadataState::Complete,
-@@ -831,11 +883,68 @@ Callee irgen::getObjCMethodCallee(IRGenFunction &IGF,
+@@ -831,11 +910,68 @@ Callee irgen::getObjCMethodCallee(IRGenFunction &IGF,
           "objc method call must be to a func/initializer/getter/setter/dtor");
  
    auto kind = methodInfo.getMessageKind();
@@ -2127,7 +2288,7 @@ index e60b660a..09c4a752 100644
      sig.setType(getMsgSendSuperTy(IGF.IGM, sig.getType(), indirectResult));
    }
  
-@@ -869,15 +978,35 @@ Callee irgen::getObjCMethodCallee(IRGenFunction &IGF,
+@@ -869,15 +1005,35 @@ Callee irgen::getObjCMethodCallee(IRGenFunction &IGF,
      }
    }();
  
@@ -2171,7 +2332,7 @@ index e60b660a..09c4a752 100644
  
    llvm::Value *receiverValue;
    if (auto searchType = methodInfo.getSearchType()) {
-@@ -888,10 +1017,6 @@ Callee irgen::getObjCMethodCallee(IRGenFunction &IGF,
+@@ -888,10 +1044,6 @@ Callee irgen::getObjCMethodCallee(IRGenFunction &IGF,
      receiverValue = selfValue;
    }
  
@@ -2182,7 +2343,7 @@ index e60b660a..09c4a752 100644
    auto fn =
        FunctionPointer::forDirect(FunctionPointer::Kind::Function, messenger,
                                   /*secondaryValue*/ nullptr, sig,
-@@ -1333,10 +1458,23 @@ static llvm::Constant *getObjCEncodingForTypes(IRGenModule &IGM,
+@@ -1333,10 +1485,23 @@ static llvm::Constant *getObjCEncodingForTypes(IRGenModule &IGM,
    // Return type.
    {
      auto clangType = IGM.getClangType(resultType.getASTType());
@@ -2210,7 +2371,7 @@ index e60b660a..09c4a752 100644
    }
  
    // Parameter types.
-@@ -1423,6 +1561,7 @@ irgen::emitObjCMethodDescriptorParts(IRGenModule &IGM,
+@@ -1423,6 +1588,7 @@ irgen::emitObjCMethodDescriptorParts(IRGenModule &IGM,
                                       bool concrete) {
    ObjCMethodDescriptor descriptor{};
    Selector selector(method);
@@ -2218,7 +2379,7 @@ index e60b660a..09c4a752 100644
    
    /// The first element is the selector.
    descriptor.selectorRef = IGM.getAddrOfObjCMethodName(selector.str());
-@@ -1461,6 +1600,7 @@ ObjCMethodDescriptor
+@@ -1461,6 +1627,7 @@ ObjCMethodDescriptor
  irgen::emitObjCGetterDescriptorParts(IRGenModule &IGM, VarDecl *property) {
    Selector getterSel(property, Selector::ForGetter);
    ObjCMethodDescriptor descriptor{};
@@ -2226,7 +2387,7 @@ index e60b660a..09c4a752 100644
    descriptor.selectorRef = IGM.getAddrOfObjCMethodName(getterSel.str());
    
    auto clangType = getObjCPropertyType(IGM, property);
-@@ -1494,6 +1634,7 @@ irgen::emitObjCGetterDescriptorParts(IRGenModule &IGM,
+@@ -1494,6 +1661,7 @@ irgen::emitObjCGetterDescriptorParts(IRGenModule &IGM,
                                       SubscriptDecl *subscript) {
    Selector getterSel(subscript, Selector::ForGetter);
    ObjCMethodDescriptor descriptor{};
@@ -2234,7 +2395,7 @@ index e60b660a..09c4a752 100644
    descriptor.selectorRef = IGM.getAddrOfObjCMethodName(getterSel.str());
  
    auto methodTy =
-@@ -1533,6 +1674,7 @@ irgen::emitObjCSetterDescriptorParts(IRGenModule &IGM,
+@@ -1533,6 +1701,7 @@ irgen::emitObjCSetterDescriptorParts(IRGenModule &IGM,
  
    Selector setterSel(property, Selector::ForSetter);
    ObjCMethodDescriptor descriptor{};
@@ -2242,7 +2403,7 @@ index e60b660a..09c4a752 100644
    descriptor.selectorRef = IGM.getAddrOfObjCMethodName(setterSel.str());
    
    auto &clangASTContext = IGM.getClangASTContext();
-@@ -1578,6 +1720,7 @@ irgen::emitObjCSetterDescriptorParts(IRGenModule &IGM,
+@@ -1578,6 +1747,7 @@ irgen::emitObjCSetterDescriptorParts(IRGenModule &IGM,
  
    Selector setterSel(subscript, Selector::ForSetter);
    ObjCMethodDescriptor descriptor{};
@@ -2302,7 +2463,7 @@ index d363cbb4..1efab321 100644
    llvm::Type *objcSuperElts[] = {
      ObjCPtrTy,
 diff --git a/lib/IRGen/IRGenModule.h b/lib/IRGen/IRGenModule.h
-index 4910b2bd..0639efce 100644
+index 4910b2bd..e8990c9e 100644
 --- a/lib/IRGen/IRGenModule.h
 +++ b/lib/IRGen/IRGenModule.h
 @@ -34,6 +34,7 @@
@@ -2313,7 +2474,7 @@ index 4910b2bd..0639efce 100644
  #include "swift/SIL/RuntimeEffect.h"
  #include "swift/SIL/SILFunction.h"
  #include "swift/SIL/SILModule.h"
-@@ -168,6 +169,19 @@ namespace irgen {
+@@ -168,6 +169,20 @@ namespace irgen {
  
  class IRGenModule;
  
@@ -2326,6 +2487,7 @@ index 4910b2bd..0639efce 100644
 +  llvm::Constant *InstanceMethods = nullptr;
 +  llvm::Constant *ClassMethods = nullptr;
 +  llvm::Constant *Ivars = nullptr;
++  llvm::Constant *Protocols = nullptr;
 +  llvm::Constant *CXXConstruct = nullptr;
 +  llvm::Constant *CXXDestruct = nullptr;
 +};
@@ -2333,7 +2495,7 @@ index 4910b2bd..0639efce 100644
  /// A type descriptor for a field type accessor.
  class FieldTypeInfo {
    llvm::PointerIntPair<CanType, 2, unsigned> Info;
-@@ -729,6 +743,27 @@ public:
+@@ -729,6 +744,27 @@ public:
    /// Does the current target require Objective-C interoperation?
    bool ObjCInterop = true;
  
@@ -2361,7 +2523,7 @@ index 4910b2bd..0639efce 100644
    /// Is the current target using the Darwin pre-stable ABI's class marker bit?
    bool UseDarwinPreStableABIBit = true;
  
-@@ -839,6 +874,8 @@ public:
+@@ -839,6 +875,8 @@ public:
    llvm::StructType *ProtocolRequirementStructTy; /// %swift.protocol_requirement
    llvm::StructType *OpaqueTy;          /// %swift.opaque
    llvm::StructType *ObjCClassStructTy; /// %objc_class
@@ -2370,7 +2532,7 @@ index 4910b2bd..0639efce 100644
    llvm::StructType *ObjCSuperStructTy; /// %objc_super
    llvm::StructType *ObjCBlockStructTy; /// %objc_block
    llvm::FunctionType *ObjCUpdateCallbackTy;
-@@ -1256,6 +1293,10 @@ public:
+@@ -1256,6 +1294,10 @@ public:
    void addUsedGlobal(llvm::GlobalValue *global);
    void addCompilerUsedGlobal(llvm::GlobalValue *global);
    void addGenericROData(llvm::Constant *addr);
@@ -2381,7 +2543,7 @@ index 4910b2bd..0639efce 100644
    void addObjCClass(llvm::Constant *addr, bool nonlazy);
    void addObjCClassStub(llvm::Constant *addr);
    void addProtocolConformance(ConformanceDescription &&conformance);
-@@ -1392,6 +1433,8 @@ private:
+@@ -1392,6 +1434,8 @@ private:
  
    // List of ro_data_t referenced from generic class patterns.
    SmallVector<llvm::WeakTrackingVH, 4> GenericRODatas;
@@ -2467,6 +2629,128 @@ index 62e6f727..00cb1ac2 100644
    case Kind::TypeMetadataLazyCacheVariable:
    case Kind::NoncanonicalSpecializedGenericTypeMetadataCacheVariable:
      return IGM.TypeMetadataPtrTy;
+diff --git a/lib/IRGen/TBDGen.cpp b/lib/IRGen/TBDGen.cpp
+index 2e3dbdac..e7ad8d4a 100644
+--- a/lib/IRGen/TBDGen.cpp
++++ b/lib/IRGen/TBDGen.cpp
+@@ -30,8 +30,10 @@
+ #include "swift/Basic/LLVM.h"
+ #include "swift/Basic/SourceManager.h"
+ #include "swift/ClangImporter/ClangImporter.h"
++#include "clang/AST/DeclObjC.h"
+ #include "swift/IRGen/IRGenPublic.h"
+ #include "swift/IRGen/Linking.h"
++#include "swift/Runtime/Config.h"
+ #include "swift/SIL/FormalLinkage.h"
+ #include "swift/SIL/SILDeclRef.h"
+ #include "swift/SIL/SILModule.h"
+@@ -493,8 +495,59 @@ void TBDGenVisitor::addObjCInterface(ClassDecl *CD) {
+   addSymbol(CD->getObjCRuntimeName(buffer), SymbolSource::forUnknown(),
+             SymbolFlags::Data, EncodeKind::ObjectiveCClass);
+   recorder.addObjCInterface(CD);
++
++#if SWIFT_OBJC_CLASS_LAYOUT == 2
++  addGNUstepProtocolSymbols(CD);
++#endif
++}
++
++#if SWIFT_OBJC_CLASS_LAYOUT == 2
++/// Account for the `struct objc_protocol` objects an Objective-C class object
++/// references in this layout.
++///
++/// A GNUstep class lists its `@objc` conformances as `struct objc_protocol *`
++/// entries.  For an imported protocol the record is clang's, emitted into the
++/// defining image's `__objc_protocols` section; IRGen references that symbol
++/// rather than emitting a Swift copy, because a copy would be Apple's
++/// `protocol_t` (a different shape) and a different object from the one
++/// libobjc2 registered (conformance checks compare pointers).  The reference
++/// is an external definition in the IR, so the symbol belongs in the TBD.
++void TBDGenVisitor::addGNUstepProtocolSymbolsIn(ArrayRef<Decl *> decls) {
++  for (auto *decl : decls)
++    addGNUstepProtocolSymbolsIn(decl);
++}
++
++void TBDGenVisitor::addGNUstepProtocolSymbolsIn(Decl *decl) {
++  if (auto *CD = dyn_cast<ClassDecl>(decl))
++    addGNUstepProtocolSymbols(CD);
++  if (auto *NTD = dyn_cast<NominalTypeDecl>(decl))
++    for (auto *member : NTD->getMembers())
++      addGNUstepProtocolSymbolsIn(member);
++  if (auto *ED = dyn_cast<ExtensionDecl>(decl))
++    for (auto *member : ED->getMembers())
++      addGNUstepProtocolSymbolsIn(member);
+ }
+ 
++void TBDGenVisitor::addGNUstepProtocolSymbols(ClassDecl *CD) {
++  for (auto *proto : CD->getAllProtocols())
++    if (auto *clangProto =
++            dyn_cast_or_null<clang::ObjCProtocolDecl>(proto->getClangDecl()))
++      addGNUstepProtocolSymbol(clangProto);
++}
++
++void TBDGenVisitor::addGNUstepProtocolSymbol(
++    const clang::ObjCProtocolDecl *proto) {
++  if (!GNUstepProtocolSymbolsSeen.insert(proto).second)
++    return;
++  SmallString<64> symbol("._OBJC_PROTOCOL_");
++  symbol += proto->getName();
++  addSymbol(symbol, SymbolSource::forUnknown(), SymbolFlags::Data,
++            EncodeKind::GlobalSymbol);
++  for (auto *inherited : proto->protocols())
++    addGNUstepProtocolSymbol(inherited);
++}
++#endif
++
+ void TBDGenVisitor::addObjCMethod(AbstractFunctionDecl *AFD) {
+   if (auto *CD = dyn_cast<ClassDecl>(AFD->getDeclContext()))
+     recorder.addObjCMethod(CD, SILDeclRef(AFD));
+@@ -552,6 +605,14 @@ void TBDGenVisitor::visit(const TBDGenDescriptor &desc) {
+     assert(SwiftModule == singleFile->getParentModule() &&
+            "mismatched file and module");
+     visitFile(singleFile, visitorCtx);
++#if SWIFT_OBJC_CLASS_LAYOUT == 2
++    // The symbol visitor does not reach every class (it follows the SIL that
++    // was generated), so the protocol records those class objects reference are
++    // collected from the declarations as well.
++    SmallVector<Decl *, 16> topLevel;
++    singleFile->getTopLevelDecls(topLevel);
++    addGNUstepProtocolSymbolsIn(topLevel);
++#endif
+     return;
+   }
+ 
+diff --git a/lib/IRGen/TBDGenVisitor.h b/lib/IRGen/TBDGenVisitor.h
+index d03f3e1d..1071373d 100644
+--- a/lib/IRGen/TBDGenVisitor.h
++++ b/lib/IRGen/TBDGenVisitor.h
+@@ -22,6 +22,7 @@
+ #include "swift/Basic/LLVM.h"
+ #include "swift/IRGen/IRSymbolVisitor.h"
+ #include "swift/IRGen/Linking.h"
++#include "swift/Runtime/Config.h"
+ #include "swift/SIL/SILDeclRef.h"
+ #include "llvm/ADT/StringSet.h"
+ #include "llvm/TargetParser/Triple.h"
+@@ -153,6 +154,19 @@ public:
+   void addObjCMethod(AbstractFunctionDecl *AFD) override;
+   void addProtocolWitnessThunk(RootProtocolConformance *C,
+                                ValueDecl *requirementDecl) override;
++
++#if SWIFT_OBJC_CLASS_LAYOUT == 2
++  /// Protocol records whose symbol has already been added; the same protocol
++  /// can be referenced by several classes.
++  llvm::SmallPtrSet<const clang::ObjCProtocolDecl *, 16>
++      GNUstepProtocolSymbolsSeen;
++
++  /// Add the `struct objc_protocol` symbols a GNUstep class object references.
++  void addGNUstepProtocolSymbols(ClassDecl *CD);
++  void addGNUstepProtocolSymbol(const clang::ObjCProtocolDecl *proto);
++  void addGNUstepProtocolSymbolsIn(Decl *decl);
++  void addGNUstepProtocolSymbolsIn(ArrayRef<Decl *> decls);
++#endif
+ };
+ } // end namespace tbdgen
+ } // end namespace swift
 diff --git a/lib/SIL/IR/Bridging.cpp b/lib/SIL/IR/Bridging.cpp
 index 0c7d0a7d..7652d069 100644
 --- a/lib/SIL/IR/Bridging.cpp

@@ -108,6 +108,12 @@ looks up *by name*: `ObjCBool` (so every `BOOL` imports as `Bool`, and
 `isEqual:`/`isKind(of:)`/`boolValue` are `Bool`), `Selector` (so `#selector`
 works) and `NSZone`. The Foundation overlay re-exports it.
 
+`libagora-objc` defines `BOOL` the way Apple does - `signed char` on x86_64,
+`bool` on arm64 - so its type encoding (`c`, or `B` on arm64) agrees with the
+one Swift emits for `Bool`. libobjc2 keys typed dispatch on (selector, encoding),
+so a mismatch would make a clang-built `BOOL` send miss a Swift override; see
+[`../SWIFT-PORT-HANDOFF.md`](../SWIFT-PORT-HANDOFF.md) §2.25.
+
 ### Imported signatures are Cocoa-shaped (`swift_bridge`)
 
 `NSString` and `NSArray` carry `__attribute__((swift_bridge(...)))` in Agora's
@@ -161,6 +167,28 @@ Checks `deinit` for fixed, generic and resilient ObjC-ancestry classes, typed
 retain/release balance, and 50k alloc/init/release cycles for leaks. The
 compiler emits one selector record per (name, encoding) with Clang's symbol
 mangling, so records from the two emitters merge.
+
+**Imported Objective-C superclasses are part of the static layout.** Darwin's
+runtime slides a Swift class's `instance_size` and ivar offsets when it realizes
+the class, so IRGen lays the fields out from the isa word there; libobjc2 does
+not slide anything. A Swift class whose superclass comes from Objective-C
+therefore adds that class's `getASTObjCInterfaceLayout()` size as padding before
+its own fields (gated on `usesGNUstepClassABI()`, the same computation clang's
+`CGObjCGNU` backend makes). A subclass of `NSView` is 504 bytes with its first
+field at 496 instead of 16 bytes with the field at 8. The one case it cannot
+cover is a superclass whose ivars exist only in its `@implementation` (invisible
+to a module importer) — see
+[`../SWIFT-GNUSTEP-CLASS-ABI.md`](../SWIFT-GNUSTEP-CLASS-ABI.md) §3 and
+[`../swift-interop-probe/conformance/FINDINGS.md`](../swift-interop-probe/conformance/FINDINGS.md).
+
+**The class object also publishes its `@objc` protocol conformances.** The
+GNUstep `protocols` field was null, so `class_conformsToProtocol:` answered `NO`
+for a Swift delegate. The list is GNUstep's `struct objc_protocol_list`
+(`{ next, count, list[] }`), and an imported protocol's entry is clang's
+`._OBJC_PROTOCOL_<name>` record from the defining image — the object libobjc2
+registered, and the one a pointer-compare conformance check needs. A protocol
+declared in Swift is still Apple-shaped and is left out of the list. See
+[`../SWIFT-PORT-HANDOFF.md`](../SWIFT-PORT-HANDOFF.md) §2.24.
 
 `SWIFT_OBJC_CLASS_LAYOUT` is a CMake cache option (`CMakeLists.txt`; empty = the
 platform default from `Runtime/Config.h`, which is 2), and
