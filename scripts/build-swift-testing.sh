@@ -87,9 +87,36 @@ configure() {
     "-Xcc" "-fmodule-map-file=$AGORA_ROOT/swift-interop-probe/agora-modules/module.modulemap"
     "-Xcc" "-I$AGORA_PREFIX/include"
     "-Xcc" "-Wno-incomplete-umbrella"
+    # `Backtrace` probes `_CFErrorSetCallStackCaptureEnabled` through `dlsym`
+    # whenever `_runtime(_ObjC)` is true, which it is on this target. That is a
+    # Foundation SPI Agora does not have; swift-testing's own switch for platforms
+    # without dynamic linking turns the probe off, and the rest of `Testing` never
+    # looks at the symbol.
+    "-D" "SWT_NO_DYNAMIC_LINKING"
   )
+  # P3 step 1: when the re-export `Foundation` (FoundationEssentials +
+  # FoundationInternationalization) has been built, it goes FIRST on the search
+  # path, so `import Foundation` in Testing means that module and not the
+  # hand-written overlay. See swift-toolchain/spike/foundation-reexport/.
+  if [[ -n "${AGORA_FOUNDATION_SPIKE_DIR:-}" ]]; then
+    local spike="$AGORA_FOUNDATION_SPIKE_DIR"
+    local icu="$OPEN_SWIFT_SOURCE_ROOT/swift-foundation-icu/icuSources/include"
+    local shims="$OPEN_SWIFT_SOURCE_ROOT/swift-foundation/Sources/_FoundationCShims/include"
+    swift_flags=(
+      "-I" "$spike/reexport/swift" "-I" "$spike/swift"
+      "-L" "$spike/reexport/lib" "-L" "$spike/lib"
+      "-Xcc" "-fmodule-map-file=$AGORA_ROOT/swift-interop-probe/agora-modules/ObjectiveCRuntime.modulemap"
+      "-Xcc" "-fmodule-map-file=$shims/module.modulemap"
+      "-Xcc" "-fmodule-map-file=$icu/_foundation_unicode/module.modulemap"
+      "-Xcc" "-I$icu" "-Xcc" "-I$shims"
+      "${swift_flags[@]}"
+    )
+  fi
   export CPATH="$AGORA_PREFIX/include:${CPATH:-}"
   export LIBRARY_PATH="$AGORA_PREFIX/lib:${LIBRARY_PATH:-}"
+  # The macro plugin is loaded by the in-process plugin server, a separate process:
+  # it needs Agora's libraries on the *loader* path, not just the linker's.
+  export LD_LIBRARY_PATH="$AGORA_PREFIX/lib${LD_LIBRARY_PATH:+:$LD_LIBRARY_PATH}"
   cmake -S "$SOURCE" -B "$BUILD" -G Ninja \
     -DCMAKE_BUILD_TYPE=Debug \
     -DCMAKE_Swift_COMPILER="$SWIFTC" \
