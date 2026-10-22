@@ -47,11 +47,20 @@
 #     is an *existential* one (`[Any]`/`[AnyObject]`), whose element destroy is
 #     `objc_release` by design — and the element is an instance of a Swift class that
 #     is not a class object.
-# Next probe: identify the element metadata of that `count`-sized destroy (print the
-# caller of `swift_arrayDestroy` and read the type descriptor at `self`), which says
-# which existential array in the program is responsible; then decide between making the
-# runtime's existential release tolerate non-class-object Swift classes and making the
-# generic pattern a class object.
+# ABI FACT that the last probes established: `asFullMetadata()` reaches the value
+# witness table at **one word before** the metadata pointer, and in the GNUstep layout
+# the class object's first word is `isa` — so a class's VWT lives in the word the
+# allocator has to reserve *before* the class object.  A statically emitted class gets
+# that word from IRGen; a runtime-instantiated generic class gets it from
+# `swift_allocateGenericClassMetadata`, and that allocation is where the two halves can
+# disagree.
+#
+# METHOD NOTE: the gdb readings above were taken against the installed libswiftCore,
+# which is `-O` with no debug info; breakpoints land after the prologue, so argument
+# registers are no longer trustworthy.  The next step is not another breakpoint on that
+# build: it is a scratch `-O0 -g` build of the stdlib runtime (same tree, separate
+# build dir), so `pattern`, `metadata` and `bounds` can be read as typed values and the
+# VWT word before an instantiated class can be printed directly.
 #
 #   AGORA_PREFIX, AGORA_SWIFT_ROOT, ... as in native-env.sh
 
