@@ -32,9 +32,9 @@ INSTALL="$BUILD/install"
 # built by the bootstrap toolchain with a non-interop ABI — linking the two makes
 # the SIL verifier reject the inlined `Array`/`String` code (measured).
 for candidate in \
-    "$BUILD/swift-syntax/cmake/modules" \
+    "$OPEN_SWIFT_SOURCE_ROOT/build/agora-linux-x86_64/swift-linux-x86_64/cmake/modules" \
     "$OPEN_SWIFT_BUILD_ROOT/agora-linux-x86_64/swift-linux-x86_64/cmake/modules" \
-    "$OPEN_SWIFT_SOURCE_ROOT/build/agora-linux-x86_64/swift-linux-x86_64/cmake/modules"; do
+    "$BUILD/swift-syntax/cmake/modules"; do
   if [[ -f "$candidate/SwiftSyntaxConfig.cmake" ]]; then
     SWIFT_SYNTAX_CMAKE="$candidate"
     break
@@ -59,7 +59,7 @@ syntax() {
   local build="$BUILD/swift-syntax"
   mkdir -p "$build"
   cmake -S "$source" -B "$build" -G Ninja \
-    -DCMAKE_BUILD_TYPE=Debug \
+    -DCMAKE_BUILD_TYPE="${AGORA_SWIFT_TESTING_BUILD_TYPE:-Debug}" \
     -DCMAKE_Swift_COMPILER="$SWIFTC" \
     -DCMAKE_C_COMPILER="${AGORA_HOST_CC:-clang}" \
     -DCMAKE_CXX_COMPILER="${AGORA_HOST_CXX:-clang++}" \
@@ -71,6 +71,13 @@ syntax() {
     SwiftCompilerPluginMessageHandling \
     2>&1 | tee "$BUILD/build-syntax.log"
 }
+
+# The C shims include Agora's headers, the link needs Agora's libraries, and the
+# macro plugin is loaded by the in-process plugin server — a separate process — so
+# it needs them on the *loader* path too.
+export CPATH="$AGORA_PREFIX/include${CPATH:+:$CPATH}"
+export LIBRARY_PATH="$AGORA_PREFIX/lib${LIBRARY_PATH:+:$LIBRARY_PATH}"
+export LD_LIBRARY_PATH="$AGORA_PREFIX/lib${LD_LIBRARY_PATH:+:$LD_LIBRARY_PATH}"
 
 configure() {
   mkdir -p "$BUILD" "$INSTALL"
@@ -93,6 +100,12 @@ configure() {
     # without dynamic linking turns the probe off, and the rest of `Testing` never
     # looks at the symbol.
     "-D" "SWT_NO_DYNAMIC_LINKING"
+    # The compiler's interface emitter writes `@_optimize(none)` onto a stored
+    # property (`failureBreakpointValue`), which its own verifier then rejects
+    # ("cannot be applied to stored properties"). That is a toolchain bug recorded
+    # in SWIFT-FOUNDATION-P2-SPIKE.md; the interface is still emitted, the
+    # round-trip check is skipped.
+    "-no-verify-emitted-module-interface"
   )
   # P3 step 1: when the re-export `Foundation` (FoundationEssentials +
   # FoundationInternationalization) has been built, it goes FIRST on the search
@@ -105,26 +118,21 @@ configure() {
     swift_flags=(
       "-I" "$spike/reexport/swift" "-I" "$spike/swift"
       "-L" "$spike/reexport/lib" "-L" "$spike/lib"
-      "-Xcc" "-fmodule-map-file=$AGORA_ROOT/swift-interop-probe/agora-modules/ObjectiveCRuntime.modulemap"
       "-Xcc" "-fmodule-map-file=$shims/module.modulemap"
       "-Xcc" "-fmodule-map-file=$icu/_foundation_unicode/module.modulemap"
       "-Xcc" "-I$icu" "-Xcc" "-I$shims"
       "${swift_flags[@]}"
     )
   fi
-  export CPATH="$AGORA_PREFIX/include:${CPATH:-}"
-  export LIBRARY_PATH="$AGORA_PREFIX/lib:${LIBRARY_PATH:-}"
-  # The macro plugin is loaded by the in-process plugin server, a separate process:
-  # it needs Agora's libraries on the *loader* path, not just the linker's.
-  export LD_LIBRARY_PATH="$AGORA_PREFIX/lib${LD_LIBRARY_PATH:+:$LD_LIBRARY_PATH}"
   cmake -S "$SOURCE" -B "$BUILD" -G Ninja \
-    -DCMAKE_BUILD_TYPE=Debug \
+    -DCMAKE_BUILD_TYPE="${AGORA_SWIFT_TESTING_BUILD_TYPE:-Debug}" \
     -DCMAKE_Swift_COMPILER="$SWIFTC" \
     -DCMAKE_C_COMPILER="${AGORA_HOST_CC:-clang}" \
     -DCMAKE_CXX_COMPILER="${AGORA_HOST_CXX:-clang++}" \
     -DCMAKE_PREFIX_PATH="$AGORA_PREFIX" \
     -DCMAKE_INSTALL_PREFIX="$INSTALL" \
     -DSwiftSyntax_DIR="$SWIFT_SYNTAX_CMAKE" \
+    -DSwiftTesting_MACRO_Swift_COMPILER="${OPEN_SWIFT_BOOTSTRAP_TOOLCHAIN}/bin/swiftc" \
     "-DCMAKE_Swift_FLAGS=${swift_flags[*]}" \
     -DCMAKE_SHARED_LINKER_FLAGS="-L$AGORA_PREFIX/lib" \
     -DCMAKE_EXE_LINKER_FLAGS="-L$AGORA_PREFIX/lib" \

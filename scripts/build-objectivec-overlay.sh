@@ -11,10 +11,12 @@
 #   SEL       -> ObjectiveC.Selector   (otherwise `#selector` is unavailable)
 #   NSZone *  -> ObjectiveC.NSZone
 #
-# On Darwin that module is an overlay over the `ObjectiveC` Clang module.
-# Agora's libobjc2 headers are not a Clang module, so the Swift module declares
-# the two C entry points it needs with `@_silgen_name` and needs no Clang
-# module at all. It is installed next to the target stdlib:
+# On Darwin that module is an overlay over the `ObjectiveC` Clang module, so
+# `import ObjectiveC` also gives `objc_getClass` and the rest of `objc/runtime.h`.
+# Agora's runtime headers were not a module; they are now (`module ObjectiveC` in
+# swift-interop-probe/agora-modules/module.modulemap), and this overlay is built
+# over them with `-import-underlying-module`, exactly like the Foundation overlay.
+# It is installed next to the target stdlib:
 #
 #   usr/lib/swift/linux/ObjectiveC.swiftmodule
 #   usr/lib/swift/linux/libObjectiveC.so
@@ -50,11 +52,15 @@ trap 'rm -rf "$work"' EXIT
 HOST_TARGET="${HOST_TARGET:-$(uname -m)-unknown-linux-gnu}"
 
 echo "== building the ObjectiveC module =="
+SHIMS="$AGORA_ROOT/swift-toolchain/objectivec-overlay/objc-runtime-shim.c"
+"${AGORA_HOST_CC:-/usr/bin/cc}" -c -fPIC -I"$AGORA_PREFIX/include" \
+  -o "$work/objc-runtime-shim.o" "$SHIMS"
 "$SWIFTC" -module-name ObjectiveC \
   -emit-module -emit-module-path "$work/ObjectiveC.swiftmodule" \
   -emit-library -module-link-name ObjectiveC \
   -o "$work/libObjectiveC.so" \
-  "$SRC"
+  "$SRC" "$work/objc-runtime-shim.o" \
+  -L"$AGORA_PREFIX/lib" -lobjc
 
 install -d "$STDLIB_DIR/ObjectiveC.swiftmodule"
 install -m 644 "$work/ObjectiveC.swiftmodule" \

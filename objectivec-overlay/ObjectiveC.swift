@@ -29,6 +29,25 @@
 //
 //===----------------------------------------------------------------------===//
 
+/// The runtime's class lookup, exposed the way Darwin's `ObjectiveC` Clang module
+/// exposes it.
+///
+/// `_silgen_name` cannot name `objc_getClass` directly ("reserved for the Swift
+/// runtime"), so the module binds C wrappers instead — see
+/// `objc-runtime-shim.c`, which also records why the Clang-module route is not
+/// taken yet (module-interface verification drops the `-Xcc` flags).
+@_silgen_name("agora_objc_getClass")
+public func objc_getClass(_ name: UnsafePointer<CChar>) -> AnyClass?
+
+@_silgen_name("agora_objc_lookUpClass")
+public func objc_lookUpClass(_ name: UnsafePointer<CChar>) -> AnyClass?
+
+@_silgen_name("agora_object_getClass")
+public func object_getClass(_ obj: Any?) -> AnyClass?
+
+@_silgen_name("agora_class_getName")
+public func class_getName(_ cls: AnyClass?) -> UnsafePointer<CChar>?
+
 /// Objective-C's `BOOL`.
 ///
 /// Agora's `BOOL` is `unsigned char` (objc/runtime.h), so the storage is one
