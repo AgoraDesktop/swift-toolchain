@@ -1,0 +1,38 @@
+diff --git a/ivar.c b/ivar.c
+index 5391a92..1504ab6 100644
+--- a/ivar.c
++++ b/ivar.c
+@@ -81,6 +81,33 @@ PRIVATE void objc_compute_ivar_offsets(Class class)
+ 				// the time, but if we have an instance variable that is a vector type
+ 				// then we will need to ensure that we are properly aligned again.
+ 				long ivar_size = ivar->size;
++				// A compiler may emit a class whose layout is only final at run time
++				// and leave `offset` null for the ivars it cannot express as offset
++				// variables: Swift's synthesized `$defaultActor` storage, and fields
++				// reached through an indirect offset.  There is no global to write
++				// back, so reserve the space - `instance_size` is what libobjc2
++				// allocates from - and leave the offset to the runtime that owns the
++				// layout (Swift sets it again when the class completes).
++				//
++				// Null has to be handled before the bitfield test below, which reads
++				// through `offset`: an actor with a stored property of a
++				// non-statically-sized imported type is emitted late-bound
++				// (`instance_size` 0), so this loop runs at load time and used to
++				// fault here on its first ivar.
++				if (NULL == ivar->offset)
++				{
++					size_t align = ivarGetAlign(ivar);
++					long rest = (next_ivar + refcount_size) % align;
++					if (rest != 0)
++					{
++						long padding = align - rest;
++						next_ivar += padding;
++						class->instance_size += padding;
++					}
++					next_ivar += ivar_size;
++					class->instance_size += ivar_size;
++					continue;
++				}
+ 				// Bitfields have the same offset - the base of the variable
+ 				// that contains them.  If we are in a bitfield, then we need
+ 				// to make sure that we don't add any displacement from the

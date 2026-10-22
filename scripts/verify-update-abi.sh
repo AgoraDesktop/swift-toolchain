@@ -177,7 +177,27 @@ precondition(sum != 0)
 print("update: ok (Payload \(MemoryLayout<Payload>.size) bytes, instance size \(size))")
 EOF
 
+# A class whose layout is only final at run time *and* which has an ivar the
+# compiler cannot express as an offset variable: an actor's synthesized
+# `$defaultActor` storage.  libobjc2 lays such a class out at load time
+# (`instance_size` 0), and it used to dereference the null offset of that ivar in
+# objc_compute_ivar_offsets() - a SIGSEGV before `main` for any actor holding a
+# property whose size is not statically known (here, an evolved `Payload`).
+cat > "$work/actor.swift" <<'AE'
+import Foundation
+import LibEvolving
+
+actor ResilientActor {
+  var p = Payload(a: 7, b: 8)
+  var tail = 9
+  func total() -> Int { p.a + p.b + tail }
+}
+
+print("actor total = \(await ResilientActor().total())")
+AE
+
 cat > "$work/helpers.c" <<'EOF'
+
 #include <objc/runtime.h>
 void *ue_class_named(const char *name) { return (void *)objc_getClass(name); }
 long ue_instance_size(void *cls) { return (long)class_getInstanceSize((Class)cls); }
@@ -199,6 +219,15 @@ build_client() {
     -I "$work/v1" -L "$work/v1" -lLibEvolving \
     -Xlinker -rpath -Xlinker "$work/v1" \
     -o "$out" "$work/client.swift" "$work/helpers.o" \
+    -L"$AGORA_PREFIX/lib" -Xlinker -rpath -Xlinker "$AGORA_PREFIX/lib"
+}
+
+build_actor() {
+  local out="$1"
+  "$SWIFTC_LAYOUT2" "${mm[@]}" \
+    -I "$work/v1" -L "$work/v1" -lLibEvolving \
+    -Xlinker -rpath -Xlinker "$work/v1" \
+    -o "$out" "$work/actor.swift" \
     -L"$AGORA_PREFIX/lib" -Xlinker -rpath -Xlinker "$AGORA_PREFIX/lib"
 }
 
@@ -241,6 +270,12 @@ build_library "$work/v1.swift" "$work/v1" || { echo "error: v1 library build fai
 build_library "$work/v2.swift" "$work/v2" || { echo "error: v2 library build failed" >&2; exit 1; }
 
 check "both strategies are exercised" check_strategies
+
+# The late-bound actor: build it once, against v1, and run it.  This is a load-time
+# check more than a layout check - the binary uses the class list before `main`.
+build_actor "$work/actor" || { echo "error: actor build failed" >&2; exit 1; }
+check "late-bound actor (resilient member) loads and runs" \
+  run_with "$work/v1" "$work/actor"
 
 for opt in "" -O; do
   name="${opt:--Onone}"

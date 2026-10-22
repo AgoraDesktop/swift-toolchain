@@ -13,6 +13,27 @@
 # runner, and run it. One binary per file keeps a compile failure in one suite from
 # hiding the results of the others.
 #
+# SwiftPM compiles the whole directory as *one module*, so the test files share
+# things freely: `LargeDataTests` (declared in `DataTests.swift`) is extended from
+# `DataIOTests.swift`, `URLTests` builds file trees with `FilePlayground`, and
+# `JSONEncoderTests`/`PropertyListEncoderTests` read resources through
+# `testData(forResource:)`.  Three things make a per-file compile equivalent:
+#
+#   * the shared helper sources are compiled in (`Tests/TestSupport/Utilities.swift`
+#     and `FoundationEssentialsTests/ResourceUtilities.swift`);
+#   * a suite that uses a type from another suite's file compiles that file too,
+#     and passes a `--filter` so the borrowed suite's tests do not run here
+#     (`CROSS_SOURCES` / `RUN_FILTER` below);
+#   * the test resources are linked next to the binaries at the path
+#     `testData` looks for (`swift-foundation_FoundationEssentialsTests-tool
+#     .resources/Resources`), which is how the SwiftPM bundle is spelled on Linux.
+#
+# The two remaining non-builds are recorded, not hidden: `PredicateTests` needs
+# the `FoundationMacros` macro plugin, which this spike does not build (see
+# SWIFT-FOUNDATION-P2-SPIKE.md), and `NotificationCenterTests` builds but has one
+# failing assertion (subject matching for non-object literals) - see the summary
+# and the spike's findings.
+#
 # Inputs (all produced by the other spike scripts):
 #   ~/.agora-swift/build/p2-foundation-testing   FE/FI with -enable-testing + reexport Foundation
 #   ~/.agora-swift/build/p2-swift-testing        Testing, TestingMacros (host build)
@@ -50,6 +71,42 @@ if [[ ${#FILES[@]} -eq 0 ]]; then
     "$TESTS/GregorianCalendarTests.swift" "$TESTS/StringTests.swift"
   )
 fi
+
+# Compiled into every suite: the helpers SwiftPM would have made module-internal.
+SUPPORT=(
+  "$SRC/Tests/TestSupport/Utilities.swift"
+  "$TESTS/ResourceUtilities.swift"
+)
+
+# A suite that uses a type declared in another suite's *file*.  The borrowed file
+# brings its own @Test declarations, so the run is filtered to the suite asked for.
+cross_sources_for() {
+  case "$(basename "$1" .swift)" in
+    DataIOTests)              printf '%s\n' "$TESTS/DataTests.swift" ;;
+    URLTests)                 printf '%s\n' "$TESTS/FileManager/FilePlayground.swift"
+                              printf '%s\n' "$TESTS/FileManager/FileManagerTests.swift" ;;
+    NotificationCenterTests)  printf '%s\n' "$TESTS/NotificationCenterMessageTests.swift" ;;
+    PropertyListEncoderTests) printf '%s\n' "$TESTS/JSONEncoderTests.swift" ;;
+  esac
+}
+
+# The run filter for such a suite: swift-testing matches against the test ID,
+# `<module>.<SuiteType>/<test>`, and the module is the binary's name.  The suite
+# *type* in these files is named after the file, so `<name>.<name>` selects
+# exactly the suite asked for and none of the borrowed one (a display name such
+# as "URL" would match the module name `URLTests` and run everything).
+run_filter_for() {
+  case "$(basename "$1" .swift)" in
+    DataIOTests|URLTests|NotificationCenterTests|PropertyListEncoderTests)
+      local n; n="$(basename "$1" .swift)"; echo "$n.$n" ;;
+  esac
+}
+
+# `testData(forResource:)` on Linux is
+# `dirname(argv[0])/swift-foundation_FoundationEssentialsTests-tool.resources/Resources`.
+RESOURCE_BUNDLE="$OUT/swift-foundation_FoundationEssentialsTests-tool.resources"
+mkdir -p "$RESOURCE_BUNDLE"
+ln -sfn "$TESTS/Resources" "$RESOURCE_BUNDLE/Resources"
 
 mkdir -p "$OUT"
 cat > "$OUT/Runner.swift" <<'EOF'
@@ -92,28 +149,61 @@ export LD_LIBRARY_PATH="$BO/lib/swift/linux:$TB/lib:$SP/lib:$SP/reexport/lib:$AG
 passed=0
 failed=0
 skipped=0
+no_tests=0
 for file in "${FILES[@]}"; do
   name="$(basename "$file" .swift)"
   bin="$OUT/$name"
   log="$OUT/$name.build.log"
+
+  # A helper file is not a suite: ResourceUtilities.swift has no @Test.
+  if [[ "$name" == "ResourceUtilities" ]]; then
+    continue
+  fi
+
+  extra=()
+  while IFS= read -r dep; do
+    [[ -n "$dep" ]] && extra+=("$dep")
+  done < <(cross_sources_for "$file")
+
   if ! "$T/bin/swiftc" -O -o "$bin" "$OUT/Runner.swift" "$file" \
-        "$SRC/Tests/TestSupport/Utilities.swift" "${COMMON[@]}" >"$log" 2>&1; then
+        "${SUPPORT[@]}" "${extra[@]}" "${COMMON[@]}" >"$log" 2>&1; then
     printf '%-34s %s\n' "$name" "BUILD FAILED"
     skipped=$((skipped + 1))
     continue
   fi
+
+  # Run only the suite this binary was built for, when the extra sources brought
+  # another one along (a `--filter`/`--skip` pair over the test IDs).
+  run_args=()
+  filter="$(run_filter_for "$file")"
+  [[ -n "$filter" ]] && run_args+=(--filter "$filter")
+
   # Run: the test binary is target code, so the target stdlib leads.
-  if LD_LIBRARY_PATH="$T/lib/swift/linux:$TB/lib:$SP/lib:$AGORA_PREFIX/lib" "$bin" \
-        >"$OUT/$name.run.log" 2>&1; then
-    summary="$(grep -E 'Test run with|tests? in .* suites?' "$OUT/$name.run.log" | tail -1)"
+  status=0
+  LD_LIBRARY_PATH="$T/lib/swift/linux:$TB/lib:$SP/lib:$AGORA_PREFIX/lib" "$bin" \
+        "${run_args[@]}" >"$OUT/$name.run.log" 2>&1 || status=$?
+  # swift-testing's "no tests found" exit code (EX_UNAVAILABLE): the file's tests
+  # are inside a platform guard (`#if FOUNDATION_FRAMEWORK`).  Not a failure.
+  if [[ "$status" -eq 69 ]] && grep -aq 'Test run with 0 tests' "$OUT/$name.run.log"; then
+    printf '%-34s %s\n' "$name" "no tests on this platform"
+    no_tests=$((no_tests + 1))
+    continue
+  fi
+  if [[ "$status" -eq 0 ]]; then
+    summary="$(grep -aE 'Test run with|tests? in .* suites?' "$OUT/$name.run.log" | tail -1)"
+    if [[ -n "$filter" ]] && grep -aq 'Test run with 0 tests' "$OUT/$name.run.log"; then
+      printf '%-34s %s\n' "$name" "FAILED (--filter \"$filter\" selected no tests)"
+      failed=$((failed + 1))
+      continue
+    fi
     printf '%-34s PASS  %s\n' "$name" "$summary"
     passed=$((passed + 1))
   else
     printf '%-34s %s\n' "$name" "FAILED"
-    { grep -E '✘|failed' "$OUT/$name.run.log" | head -5 | sed 's/^/    /'; } || true
+    { grep -aE '✘|failed' "$OUT/$name.run.log" | head -5 | sed 's/^/    /'; } || true
     failed=$((failed + 1))
   fi
 done
 
 echo
-echo "suites: $passed passed, $failed failed, $skipped did not build (logs in $OUT)"
+echo "suites: $passed passed, $failed failed, $skipped did not build, $no_tests with no tests (logs in $OUT)"
