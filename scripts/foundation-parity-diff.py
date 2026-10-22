@@ -464,6 +464,9 @@ CLUSTER_REASONS = {
     "NSSortOptions": "P1: imported OptionSet; the symbol graph omits its stored rawValue",
     "NSEnumerationOptions": "P1: imported OptionSet; the symbol graph omits its stored rawValue",
     "NSBinarySearchingOptions": "P1: imported OptionSet; the symbol graph omits its stored rawValue",
+    # Darwin declares NSRectEdge as a deprecated alias of Core Graphics' CGRectEdge;
+    # the reference (Linux corelibs) declares a separate enum. We follow Darwin.
+    "NSRectEdge": "deviation: alias of CGRectEdge on Darwin; corelibs has its own enum",
     "CGFloat": "geometry: a typealias to Double here; a struct in the reference",
     "CGPoint": "geometry: CoreGraphics type, not re-exported",
     "CGSize": "geometry: CoreGraphics type, not re-exported",

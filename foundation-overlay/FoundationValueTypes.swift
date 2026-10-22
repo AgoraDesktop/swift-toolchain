@@ -193,7 +193,13 @@ public struct Date: Comparable, Hashable, CustomStringConvertible {
   }
 
   public init() {
-    self = Date(timeIntervalSinceReferenceDate: NSDate.timeIntervalSinceReferenceDate())
+    self = Date(timeIntervalSinceReferenceDate: NSDate.timeIntervalSinceReferenceDate)
+  }
+
+  /// The reference date's own interval, as a type property (Darwin has both this
+  /// and the instance one above).
+  public static var timeIntervalSinceReferenceDate: Double {
+    return NSDate.timeIntervalSinceReferenceDate
   }
 
   public init(timeIntervalSince1970: Double) {
@@ -201,7 +207,7 @@ public struct Date: Comparable, Hashable, CustomStringConvertible {
   }
 
   public init(timeIntervalSinceNow: Double) {
-    self.init(timeIntervalSinceReferenceDate: NSDate.timeIntervalSinceReferenceDate()
+    self.init(timeIntervalSinceReferenceDate: NSDate.timeIntervalSinceReferenceDate
                 + timeIntervalSinceNow)
   }
 
@@ -210,7 +216,7 @@ public struct Date: Comparable, Hashable, CustomStringConvertible {
   }
 
   public var timeIntervalSinceNow: Double {
-    return timeIntervalSinceReferenceDate - NSDate.timeIntervalSinceReferenceDate()
+    return timeIntervalSinceReferenceDate - NSDate.timeIntervalSinceReferenceDate
   }
 
   public func timeIntervalSince(_ other: Date) -> Double {
@@ -631,19 +637,25 @@ extension Calendar: _ObjectiveCBridgeable {
 }
 
 extension Calendar {
-  public struct Component: Hashable {
-    internal var _unit: NSCalendarUnit
-    internal init(_ unit: NSCalendarUnit) { _unit = unit }
+  /// The calendar units Darwin names. An enum, not a struct of static values:
+  /// the reference imports `.era` as an enum case, and a set of units is then an
+  /// honest collection.
+  public enum Component: Hashable {
+    case era, year, month, day, hour, minute, second, weekday, weekOfYear
 
-    public static let era = Component(NSCalendarUnit(NSCalendarUnitEra))
-    public static let year = Component(NSCalendarUnit(NSCalendarUnitYear))
-    public static let month = Component(NSCalendarUnit(NSCalendarUnitMonth))
-    public static let day = Component(NSCalendarUnit(NSCalendarUnitDay))
-    public static let hour = Component(NSCalendarUnit(NSCalendarUnitHour))
-    public static let minute = Component(NSCalendarUnit(NSCalendarUnitMinute))
-    public static let second = Component(NSCalendarUnit(NSCalendarUnitSecond))
-    public static let weekday = Component(NSCalendarUnit(NSCalendarUnitWeekday))
-    public static let weekOfYear = Component(NSCalendarUnit(NSCalendarUnitWeekOfYear))
+    internal var _unit: NSCalendarUnit {
+      switch self {
+      case .era: return NSCalendarUnit(NSCalendarUnitEra)
+      case .year: return NSCalendarUnit(NSCalendarUnitYear)
+      case .month: return NSCalendarUnit(NSCalendarUnitMonth)
+      case .day: return NSCalendarUnit(NSCalendarUnitDay)
+      case .hour: return NSCalendarUnit(NSCalendarUnitHour)
+      case .minute: return NSCalendarUnit(NSCalendarUnitMinute)
+      case .second: return NSCalendarUnit(NSCalendarUnitSecond)
+      case .weekday: return NSCalendarUnit(NSCalendarUnitWeekday)
+      case .weekOfYear: return NSCalendarUnit(NSCalendarUnitWeekOfYear)
+      }
+    }
   }
 }
 
