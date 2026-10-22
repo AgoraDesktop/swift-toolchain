@@ -460,6 +460,10 @@ CLUSTER_REASONS = {
     "NotificationQueue": "P1: renamed; member/property-shape gaps remain",
     "Host": "P1: renamed; member/property-shape gaps remain",
     # geometry lives in CoreGraphics, not Foundation
+    "AlignmentOptions": "P1: imported OptionSet; the symbol graph omits its stored rawValue",
+    "NSSortOptions": "P1: imported OptionSet; the symbol graph omits its stored rawValue",
+    "NSEnumerationOptions": "P1: imported OptionSet; the symbol graph omits its stored rawValue",
+    "NSBinarySearchingOptions": "P1: imported OptionSet; the symbol graph omits its stored rawValue",
     "CGFloat": "geometry: a typealias to Double here; a struct in the reference",
     "CGPoint": "geometry: CoreGraphics type, not re-exported",
     "CGSize": "geometry: CoreGraphics type, not re-exported",
