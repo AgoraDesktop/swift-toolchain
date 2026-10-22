@@ -440,7 +440,7 @@ CLUSTER_REASONS = {
     "URLQueryItem": "T3: FoundationEssentials URLComponents",
     "FormatStyle": "T3: FoundationEssentials format styles",
     # P1: names and annotations
-    "Bundle": "P1: rename layer (NSBundle -> Bundle)",
+    "Bundle": "P1: Bundle landed; the rest are member/property-shape gaps",
     "Process": "P1: rename layer (NSTask -> Process)",
     "FileHandle": "P1: rename layer",
     "Pipe": "P1: rename layer",
@@ -676,6 +676,10 @@ def main(argv=None):
     entries = parse_allowlist(args.allowlist) if args.allowlist else []
 
     if args.update_allowlist:
+        # Recompute every count, then *add* an entry for a gap nothing accepts:
+        # a landing can close gaps (the count falls) and can also expose one
+        # (renaming NSBundle to Bundle made Bundle's conformances measurable).
+        # Both belong in the diff for review.
         for entry in entries:
             if entry["kind"] == "symbol":
                 entry["count"] = len(diff._match_symbol_entry(entry["prefix"]))
@@ -685,8 +689,59 @@ def main(argv=None):
                         entry["prefix"], entry["protocol"]
                     )
                 )
+
+        known = {(e["kind"], e["prefix"], e["protocol"]) for e in entries}
+        uncovered = collections.Counter()
+        for path, _kind in diff.missing_keys:
+            name = container(path)
+            if not any(
+                e["kind"] == "symbol"
+                and (path == diff._strip_module(e["prefix"])
+                     or path.startswith(diff._strip_module(e["prefix"]) + "."))
+                for e in entries
+            ):
+                uncovered[name] += 1
+        for name, count in sorted(uncovered.items()):
+            key = ("symbol", f"Foundation:{name}", None)
+            if key not in known:
+                entries.append(
+                    {
+                        "kind": "symbol",
+                        "prefix": f"Foundation:{name}",
+                        "protocol": None,
+                        "count": count,
+                        "reason": reason_for(name, name in diff.our_paths_all),
+                    }
+                )
+
+        uncovered_conformances = collections.Counter()
+        for type_path, protocol in diff.conformance_gaps:
+            if not any(
+                e["kind"] == "conformance"
+                and diff._strip_module(e["prefix"]) == type_path
+                and e["protocol"] in (protocol, "*")
+                for e in entries
+            ):
+                uncovered_conformances[type_path] += 1
+        for type_path, count in sorted(uncovered_conformances.items()):
+            key = ("conformance", f"Foundation:{type_path}", "*")
+            if key not in known:
+                entries.append(
+                    {
+                        "kind": "conformance",
+                        "prefix": f"Foundation:{type_path}",
+                        "protocol": "*",
+                        "count": count,
+                        "reason": reason_for(
+                            container(type_path),
+                            container(type_path) in diff.our_paths_all,
+                        ),
+                    }
+                )
+
+        entries.sort(key=lambda e: (e["prefix"], e["kind"], e["protocol"] or ""))
         write_allowlist(args.update_allowlist, entries, HEADER)
-        print(f"updated counts in {args.update_allowlist}")
+        print(f"updated {len(entries)} entries in {args.update_allowlist}")
         return 0
 
     diff.report(entries)
