@@ -1,0 +1,22 @@
+diff --git a/NSCalendar.m b/NSCalendar.m
+index 4568875..6d9fa0f 100644
+--- a/NSCalendar.m
++++ b/NSCalendar.m
+@@ -876,7 +876,16 @@ NSCalendarIdentifier const NSCalendarIdentifierVikram = @"vikram";
+ 
+ - (void)setLocale:(NSLocale *)locale
+ {
+-	_locale = locale;
++	/* RETAINED, for the reason -setTimeZone: above is: the locale usually comes
++	 * from an expression the caller does not keep (`calendar.locale =
++	 * Locale(identifier: "en_US")` through the Swift bridge), and a calendar that
++	 * only borrowed it answered `-locale` with freed memory - which faulted on
++	 * the *retain* of the answer, two frames away from here.
++	 *
++	 * Unlike -setTimeZone: a nil locale is legal: nil means "the current locale",
++	 * and -locale resolves it on every read (Cocoa's rule).  This class has no
++	 * -dealloc, so the calendar keeps the locales it was given. */
++	_locale = (locale != nil) ? objc_retain(locale) : nil;
+ }
+ 
+ + (NSCalendar *)autoupdatingCurrentCalendar
