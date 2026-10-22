@@ -4301,7 +4301,7 @@ index 3033532e..f1883b0b 100644
  
  #endif // defined(__GNUSTEP_RUNTIME__) || defined(__OBJC_GNUSTEP_RUNTIME_ABI__)
 diff --git a/stdlib/public/runtime/Metadata.cpp b/stdlib/public/runtime/Metadata.cpp
-index c35e8430..3b8f0e50 100644
+index c35e8430..d31f85cc 100644
 --- a/stdlib/public/runtime/Metadata.cpp
 +++ b/stdlib/public/runtime/Metadata.cpp
 @@ -148,7 +148,7 @@ Metadata *TargetSingletonMetadataInitialization<InProcess>::allocate(
@@ -4467,7 +4467,31 @@ index c35e8430..3b8f0e50 100644
  static void
  initializeClassMetadataFromPattern(ClassMetadata *metadata,
                                     ClassMetadataBounds bounds,
-@@ -529,7 +667,11 @@ initializeClassMetadataFromPattern(ClassMetadata *metadata,
+@@ -521,15 +659,35 @@ initializeClassMetadataFromPattern(ClassMetadata *metadata,
+ 
+   // Value witness table.
+ #if SWIFT_OBJC_INTEROP
++#if SWIFT_OBJC_CLASS_LAYOUT == 2
++  // In the GNUstep layout a pattern class is an Objective-C class object only
++  // when the pattern carries a metaclass (a generic class with imported ObjC
++  // ancestry, S4b).  Every other pattern class - a pure Swift generic class -
++  // is left with no `isa` and no dispatch table, so the Objective-C class
++  // witnesses (whose `destroy` sends `-release`) would message nothing and
++  // crash on the first release.  Such a class keeps Swift's witnesses, which is
++  // also how its code is compiled: Swift allocates and refcounts it natively.
++  bool isClassObjectPattern = pattern->MetaclassObjectOffset != 0;
++  fullMetadata->ValueWitnesses =
++    (!isClassObjectPattern ||
++     (pattern->Flags & ClassFlags::UsesSwiftRefcounting))
++       ? &VALUE_WITNESS_SYM(Bo)
++       : &VALUE_WITNESS_SYM(BO);
++#else
+   fullMetadata->ValueWitnesses =
+     (pattern->Flags & ClassFlags::UsesSwiftRefcounting)
+        ? &VALUE_WITNESS_SYM(Bo)
+        : &VALUE_WITNESS_SYM(BO);
++#endif
+ #else
    fullMetadata->ValueWitnesses = &VALUE_WITNESS_SYM(Bo);
  #endif
  
@@ -4480,7 +4504,7 @@ index c35e8430..3b8f0e50 100644
    // Install the metaclass's RO-data pointer.
    auto metaclass = reinterpret_cast<AnyClassMetadata *>(
        metadataExtraData + pattern->MetaclassObjectOffset);
-@@ -538,8 +680,10 @@ initializeClassMetadataFromPattern(ClassMetadata *metadata,
+@@ -538,8 +696,10 @@ initializeClassMetadataFromPattern(ClassMetadata *metadata,
  #endif
  
    // MetadataKind / isa.
@@ -4492,7 +4516,7 @@ index c35e8430..3b8f0e50 100644
  #else
    metadata->setKind(MetadataKind::Class);
  #endif
-@@ -547,15 +691,15 @@ initializeClassMetadataFromPattern(ClassMetadata *metadata,
+@@ -547,15 +707,15 @@ initializeClassMetadataFromPattern(ClassMetadata *metadata,
    // Superclass.
    metadata->Superclass = nullptr;
  
@@ -4511,7 +4535,7 @@ index c35e8430..3b8f0e50 100644
    auto classRO = metadataExtraData + pattern->ClassRODataOffset;
    metadata->Data =
      reinterpret_cast<uintptr_t>(classRO) | SWIFT_CLASS_IS_SWIFT_MASK;
-@@ -3353,8 +3497,10 @@ _swift_relocateClassMetadata(const ClassDescriptor *description,
+@@ -3353,8 +3513,10 @@ _swift_relocateClassMetadata(const ClassDescriptor *description,
  #endif
  
    // MetadataKind / isa.
@@ -4523,7 +4547,7 @@ index c35e8430..3b8f0e50 100644
  #else
    metadata->setKind(MetadataKind::Class);
  #endif
-@@ -3362,15 +3508,15 @@ _swift_relocateClassMetadata(const ClassDescriptor *description,
+@@ -3362,15 +3524,15 @@ _swift_relocateClassMetadata(const ClassDescriptor *description,
    // Superclass.
    metadata->Superclass = nullptr;
  
@@ -4542,7 +4566,7 @@ index c35e8430..3b8f0e50 100644
    auto classRO = pattern->Data.get();
    metadata->Data =
      reinterpret_cast<uintptr_t>(classRO) | SWIFT_CLASS_IS_SWIFT_MASK;
-@@ -3451,24 +3597,12 @@ namespace {
+@@ -3451,24 +3613,12 @@ namespace {
    };
  } // end anonymous namespace
  
@@ -4573,7 +4597,7 @@ index c35e8430..3b8f0e50 100644
  // This gets called if we fail during copyGenericClassObjcName().  Its job is
  // to generate a unique name, even though the name won't be very helpful if
  // we end up looking at it in a debugger.
-@@ -3524,8 +3658,51 @@ static char *copyGenericClassObjCName(ClassMetadata *theClass) {
+@@ -3524,8 +3674,51 @@ static char *copyGenericClassObjCName(ClassMetadata *theClass) {
    return fullNameBuf;
  }
  
@@ -4626,7 +4650,7 @@ index c35e8430..3b8f0e50 100644
  
    char *name = copyGenericClassObjCName(theClass);
    getROData(theClass)->Name = name;
-@@ -3563,7 +3740,7 @@ SWIFT_ALLOWED_RUNTIME_GLOBAL_CTOR_END
+@@ -3563,7 +3756,7 @@ SWIFT_ALLOWED_RUNTIME_GLOBAL_CTOR_END
  static void setUpGenericClassObjCName(ClassMetadata *theClass) {
    if (supportsLazyObjcClassNames()) {
      getROData(theClass)->Name = nullptr;
@@ -4635,7 +4659,7 @@ index c35e8430..3b8f0e50 100644
      getROData(theMetaclass)->Name = nullptr;
      getROData(theMetaclass)->NonMetaClass = theClass;
    } else {
-@@ -3572,6 +3749,22 @@ static void setUpGenericClassObjCName(ClassMetadata *theClass) {
+@@ -3572,6 +3765,22 @@ static void setUpGenericClassObjCName(ClassMetadata *theClass) {
  }
  #endif
  
@@ -4658,7 +4682,7 @@ index c35e8430..3b8f0e50 100644
  /// Initialize the invariant superclass components of a class metadata,
  /// such as the generic type arguments, field offsets, and so on.
  static void copySuperclassMetadataToSubclass(ClassMetadata *theClass,
-@@ -3636,15 +3829,15 @@ static void copySuperclassMetadataToSubclass(ClassMetadata *theClass,
+@@ -3636,15 +3845,15 @@ static void copySuperclassMetadataToSubclass(ClassMetadata *theClass,
      ancestor = ancestor->Superclass;
    }
  
@@ -4678,7 +4702,7 @@ index c35e8430..3b8f0e50 100644
      theMetaclass->Superclass = theSuperMetaclass;
    }
  #endif
-@@ -3756,6 +3949,29 @@ static void initClassVTable(ClassMetadata *self,
+@@ -3756,6 +3965,29 @@ static void initClassVTable(ClassMetadata *self,
    }
  }
  
@@ -4708,7 +4732,7 @@ index c35e8430..3b8f0e50 100644
  static void initClassFieldOffsetVector(ClassMetadata *self,
                                         size_t numFields,
                                         const TypeLayout * const *fieldTypes,
-@@ -3763,7 +3979,7 @@ static void initClassFieldOffsetVector(ClassMetadata *self,
+@@ -3763,7 +3995,7 @@ static void initClassFieldOffsetVector(ClassMetadata *self,
    // Start layout by appending to a standard heap object header.
    size_t size, alignMask;
  
@@ -4717,7 +4741,7 @@ index c35e8430..3b8f0e50 100644
    ClassROData *rodata = getROData(self);
  #endif
  
-@@ -3772,19 +3988,28 @@ static void initClassFieldOffsetVector(ClassMetadata *self,
+@@ -3772,19 +4004,28 @@ static void initClassFieldOffsetVector(ClassMetadata *self,
      auto *super = self->Superclass;
  
      // This is straightforward if the superclass is Swift.
@@ -4748,7 +4772,7 @@ index c35e8430..3b8f0e50 100644
        alignMask = 0xF; // malloc alignment guarantee
      }
  #endif
-@@ -3796,7 +4021,7 @@ static void initClassFieldOffsetVector(ClassMetadata *self,
+@@ -3796,7 +4037,7 @@ static void initClassFieldOffsetVector(ClassMetadata *self,
      alignMask = heapLayout.flags.getAlignmentMask();
    }
  
@@ -4757,7 +4781,7 @@ index c35e8430..3b8f0e50 100644
    // Ensure that Objective-C does layout starting from the right
    // offset.  This needs to exactly match the superclass rodata's
    // InstanceSize in cases where the compiler decided that we didn't
-@@ -3838,14 +4063,20 @@ static void initClassFieldOffsetVector(ClassMetadata *self,
+@@ -3838,14 +4079,20 @@ static void initClassFieldOffsetVector(ClassMetadata *self,
    self->setInstanceSize(size);
    self->setInstanceAlignMask(alignMask);
  
@@ -4780,7 +4804,7 @@ index c35e8430..3b8f0e50 100644
  /// Non-generic classes only. Initialize the Objective-C ivar descriptors and
  /// field offset globals. Does *not* register the class with the Objective-C
  /// runtime; that must be done by the caller.
-@@ -4153,7 +4384,7 @@ _swift_initClassMetadataImpl(ClassMetadata *self,
+@@ -4153,7 +4400,7 @@ _swift_initClassMetadataImpl(ClassMetadata *self,
  
    initClassFieldOffsetVector(self, numFields, fieldTypes, fieldOffsets);
  
@@ -4789,7 +4813,7 @@ index c35e8430..3b8f0e50 100644
    auto *description = self->getDescription();
    if (description->isGeneric()) {
      assert(!description->hasObjCResilientClassStub());
-@@ -4182,6 +4413,33 @@ _swift_initClassMetadataImpl(ClassMetadata *self,
+@@ -4182,6 +4429,33 @@ _swift_initClassMetadataImpl(ClassMetadata *self,
        swift_instantiateObjCClass(self);
      }
    }
@@ -4823,7 +4847,7 @@ index c35e8430..3b8f0e50 100644
  #else
    assert(!self->getDescription()->hasObjCResilientClassStub());
  #endif
-@@ -4210,7 +4468,7 @@ swift::swift_initClassMetadata2(ClassMetadata *self,
+@@ -4210,7 +4484,7 @@ swift::swift_initClassMetadata2(ClassMetadata *self,
                                        /*allowDependency*/ true);
  }
  
@@ -4832,7 +4856,7 @@ index c35e8430..3b8f0e50 100644
  
  static SWIFT_CC(swift) MetadataDependency
  _swift_updateClassMetadataImpl(ClassMetadata *self,
-@@ -4219,6 +4477,7 @@ _swift_updateClassMetadataImpl(ClassMetadata *self,
+@@ -4219,6 +4493,7 @@ _swift_updateClassMetadataImpl(ClassMetadata *self,
                                 const TypeLayout * const *fieldTypes,
                                 size_t *fieldOffsets,
                                 bool allowDependency) {
@@ -4840,7 +4864,7 @@ index c35e8430..3b8f0e50 100644
    bool requiresUpdate = SWIFT_RUNTIME_WEAK_CHECK(_objc_realizeClassFromSwift);
  
    // If we're on a newer runtime, we're going to be initializing the
-@@ -4271,6 +4530,45 @@ _swift_updateClassMetadataImpl(ClassMetadata *self,
+@@ -4271,6 +4546,45 @@ _swift_updateClassMetadataImpl(ClassMetadata *self,
    }
  
    return MetadataDependency();
@@ -4886,7 +4910,7 @@ index c35e8430..3b8f0e50 100644
  }
  
  void swift::swift_updateClassMetadata(ClassMetadata *self,
-@@ -4294,6 +4592,9 @@ swift::swift_updateClassMetadata2(ClassMetadata *self,
+@@ -4294,6 +4608,9 @@ swift::swift_updateClassMetadata2(ClassMetadata *self,
                                          /*allowDependency*/ true);
  }
  
@@ -4896,7 +4920,7 @@ index c35e8430..3b8f0e50 100644
  Class
  swift::swift_updatePureObjCClassMetadata(Class cls,
                                           ClassLayoutFlags flags,
-@@ -5932,7 +6233,7 @@ template <> SWIFT_USED void Metadata::dump() const {
+@@ -5932,7 +6249,7 @@ template <> SWIFT_USED void Metadata::dump() const {
      printf("\n");
    }
  

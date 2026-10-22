@@ -27,6 +27,19 @@
 # make the pattern a class object), and this script is its acceptance test: it must
 # pass before the value-type test suites can run.
 #
+# TESTED HYPOTHESES, both negative:
+#   1. the runtime picks the class value-witness table by the generic pattern's
+#      `ClassFlags::UsesSwiftRefcounting`; a guard was added so a pattern without a
+#      metaclass (i.e. not a class object) keeps Swift's witnesses unconditionally.
+#      The gate stayed red, so that is not the path this program takes — the guard is
+#      kept as a correctness measure, not as the fix (patches/0003).
+#   2. the compiled IR contains no `objc_release`, so the destroy comes from a
+#      witness table or layout string selected at run time.
+# Next probe: break in `initializeClassMetadataFromPattern` for this program and read
+# `pattern->Flags`/`MetaclassObjectOffset`, and check whether the array's destroy goes
+# through the layout-string engine (`swift_cvw_arrayDestroy` → `objcStrongDestroy`),
+# which would move the fix to the layout string's refcounting decision instead.
+#
 #   AGORA_PREFIX, AGORA_SWIFT_ROOT, ... as in native-env.sh
 
 set -euo pipefail
