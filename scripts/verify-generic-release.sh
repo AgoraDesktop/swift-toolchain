@@ -35,10 +35,23 @@
 #      kept as a correctness measure, not as the fix (patches/0003).
 #   2. the compiled IR contains no `objc_release`, so the destroy comes from a
 #      witness table or layout string selected at run time.
-# Next probe: break in `initializeClassMetadataFromPattern` for this program and read
-# `pattern->Flags`/`MetaclassObjectOffset`, and check whether the array's destroy goes
-# through the layout-string engine (`swift_cvw_arrayDestroy` → `objcStrongDestroy`),
-# which would move the fix to the layout string's refcounting decision instead.
+# MEASURED (gdb, the minimal program):
+#   - the generic pattern's `ClassFlags` are 2, i.e. `UsesSwiftRefcounting` IS set, so
+#     the runtime picks Swift's class witnesses — hypothesis 1 was wrong on the facts,
+#     not only on the path;
+#   - the layout-string destroy symbols (`objcStrongDestroy`,
+#     `nativeSwiftObjcStrongDestroy`) are never reached, so the layout-string engine is
+#     not the destroy either;
+#   - the crashing call is `swift_arrayDestroy` with a small `count` whose `self`
+#     metadata sits next to `Any`/`AnyObject` metadata, i.e. the array being destroyed
+#     is an *existential* one (`[Any]`/`[AnyObject]`), whose element destroy is
+#     `objc_release` by design — and the element is an instance of a Swift class that
+#     is not a class object.
+# Next probe: identify the element metadata of that `count`-sized destroy (print the
+# caller of `swift_arrayDestroy` and read the type descriptor at `self`), which says
+# which existential array in the program is responsible; then decide between making the
+# runtime's existential release tolerate non-class-object Swift classes and making the
+# generic pattern a class object.
 #
 #   AGORA_PREFIX, AGORA_SWIFT_ROOT, ... as in native-env.sh
 
