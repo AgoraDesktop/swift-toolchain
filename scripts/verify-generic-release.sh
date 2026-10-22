@@ -79,10 +79,20 @@
 #
 # That is the bug: **generic-argument access for a runtime-instantiated class at layout
 # 2**, not the class pattern, the VWT choice, the layout string, or array storage.
-# Next: print the descriptor's `getGenericArgumentOffset()` in `installGenericArguments`
-# (the write side) next to the offset IRGen uses when a class method reads `Element.self`
-# (the read side); whichever differs by one word is the fix, in `Metadata.h`'s
-# `getNonResilientImmediateMembersOffset()` or in IRGen's class layout.
+# The offset probe then localised the *storage* side: with the diagnostic in both
+# `swift_allocateGenericClassMetadata` and `installGenericArguments`, the five-line
+# program instantiates exactly one generic class — the user's `Box` — and fills its
+# argument slot correctly (`offset=22`, `arg0` = the element metadata).  The array's
+# `_ContiguousArrayStorage<Box<…>>` **never goes through the runtime instantiation
+# path at all**, yet its element slot holds a value witness table.  That means the
+# storage's metadata is emitted **statically** (a prespecialized/static generic class),
+# and the argument IRGen bakes into it at layout 2 is the element's VWT rather than the
+# element's metadata.
+#
+# Next: read the statically emitted `_ContiguousArrayStorage` metadata in the binary
+# (its argument slot and the symbol IRGen stores there), then fix the prespecialized
+# class emission in `GenMeta.cpp` (`addGenericArguments`/`IsStaticSpecialization`) for
+# layout 2 — not the runtime, which is filling its own slots correctly.
 #
 #   AGORA_PREFIX, AGORA_SWIFT_ROOT, ... as in native-env.sh
 
