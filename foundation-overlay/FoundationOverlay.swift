@@ -867,8 +867,28 @@ func _convertErrorToNSError(_ error: Error) -> NSError {
   return unsafeBitCast(_bridgeErrorToNSError(error), to: NSError.self)
 }
 
+/// The ObjC `throws` bridge's NSError -> Error conversion.
+///
+/// THE PARAMETER IS OPTIONAL because that is the type the compiler looks this
+/// function up with (`SILGen.cpp`: `GET_BRIDGING_FN(Foundation, OPTIONAL, NSError,
+/// EXISTENTIAL, Error)`), and a signature that does not match is fatal: the
+/// compiler reports "definition of implicit conversion function
+/// 'Foundation._convertNSErrorToError' is not of the correct type" and aborts with
+/// "unable to set up the ObjC bridge".  It stayed latent while nothing in the
+/// module needed the bridge; a Swift subclass of an Objective-C class (the first
+/// version of `__NSSwiftData`) is enough to ask for it.
+///
+/// An Objective-C `throws` call that fails always hands back an `NSError`, so the
+/// nil arm is only reachable through the compiler's own signature; an empty error
+/// is the honest answer there rather than a crash.
 public // COMPILER_INTRINSIC
-func _convertNSErrorToError(_ error: NSError) -> Error {
+func _convertNSErrorToError(_ error: NSError?) -> Error {
+  guard let error else {
+    // Agora's `-initWithDomain:code:userInfo:` is nullable (its header says so), and
+    // this arm is unreachable in practice: fall back to the simplest NSError that
+    // exists rather than fabricate one.
+    return NSError()
+  }
   return error
 }
 

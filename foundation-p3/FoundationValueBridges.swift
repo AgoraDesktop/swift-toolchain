@@ -13,10 +13,14 @@
 // This file therefore adopts the bridge protocols *retroactively* on
 // FoundationEssentials' types, exactly as the old overlay did for its own
 // hand-written types.  Each bridge is a value conversion, not a view: a copy, in
-// both directions.  Darwin's `Data`/`String` bridges are zero-copy because
-// CoreFoundation ships `__NSSwiftData`-style holders for the Swift storage; doing
-// that here is a later step, and the `_ObjectiveCBridgeable` protocol does not
-// distinguish the two, so call sites do not change when it lands.
+// both directions.  `Data` is zero-copy in both directions now: it crosses as an
+// `FNDataView` over the same storage (Agora's class, because a *Swift* subclass
+// cannot register the `NSUInteger` encoding the Objective-C callers send — §2.38),
+// and the inverse bridge adopts that view.  `String`, `Array`, `Dictionary` and `Set` use
+// the standard library's deferred wrappers, which `FoundationShim.swift` already
+// routes; the remaining bridges here are value conversions because their
+// Objective-C classes have no storage to share (a `Date` is a `double`, an
+// `IndexPath` is an index array).
 //
 // Bridges written: `Data`, `Date`, `URL`, `UUID`, `IndexPath`, `Decimal`,
 // `TimeZone`, `Locale`, `Calendar`, `DateComponents`, `DateInterval` — every
@@ -33,6 +37,22 @@ extension Data: _ObjectiveCBridgeable {
   public typealias _ObjectiveCType = NSData
 
   public func _bridgeToObjectiveC() -> NSData {
+    guard !isEmpty else { return NSData() }
+    // A view, not a copy, when FoundationEssentials keeps the bytes out of line:
+    // `FNDataView` (Agora's, not a Swift subclass — see NSData.h) answers `-bytes`
+    // out of the storage the boxed value below keeps alive.
+    //
+    // The small case stays a copy. FoundationEssentials keeps up to 14 bytes
+    // *inside* the `Data` struct (`_Representation.inline`), and `withUnsafeBytes`
+    // addresses a temporary there, so there is no storage to point at; copying 14
+    // bytes is both cheaper and sound.
+    if count > 14, let base = withUnsafeBytes({ $0.baseAddress }) {
+      // Owned by a box, *not* by `self as AnyObject`: `Data` conforms to
+      // `_ObjectiveCBridgeable` (in this file), so `as AnyObject` would re-enter
+      // this very method.  A plain class holding the value keeps the storage alive
+      // and has no bridge of its own.
+      return FNDataView(bytes: base, length: count, owner: DataBridgeBox(self))
+    }
     return withUnsafeBytes { buffer in
       NSData(bytes: buffer.baseAddress, length: buffer.count)
     }
@@ -53,9 +73,29 @@ extension Data: _ObjectiveCBridgeable {
   }
 
   public static func _unconditionallyBridgeFromObjectiveC(_ source: NSData?) -> Data {
-    guard let source, source.length > 0, let bytes = source.bytes else { return Data() }
+    guard let source else { return Data() }
+    // Our own view: adopt the value it was built from, no copy either way.  A
+    // subrange view reports the parent's owner and its own offset, so the slice is
+    // taken here — and a `Data` slice shares the parent's storage.
+    if let view = source as? FNDataView, let box = view.owner as? DataBridgeBox {
+      let start = Int(view.offset)
+      let end = start + Int(view.length)
+      if start == 0 && end == box.value.count {
+        return box.value
+      }
+      return Data(box.value[box.value.startIndex + start ..< box.value.startIndex + end])
+    }
+    guard source.length > 0, let bytes = source.bytes else { return Data() }
     return Data(bytes: bytes, count: source.length)
   }
+}
+
+/// Keeps a `Data` value alive for `FNDataView` without going through the bridge
+/// (`Data: _ObjectiveCBridgeable` lives in this file, so boxing it as `AnyObject`
+/// would call the bridge again).
+final class DataBridgeBox {
+  let value: Data
+  init(_ value: Data) { self.value = value }
 }
 
 // MARK: - Date <-> NSDate

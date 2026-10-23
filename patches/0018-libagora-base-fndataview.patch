@@ -1,0 +1,148 @@
+diff --git a/NSData.h b/NSData.h
+index f207375..128e8cb 100644
+--- a/NSData.h
++++ b/NSData.h
+@@ -253,6 +253,39 @@ enum {
+ 
+ @end
+ 
++/* A READ-ONLY VIEW OVER MEMORY SOMEBODY ELSE OWNS — the Objective-C half of the
++ * `Data` <-> `NSData` bridge (Swift-port handoff §2.38).
++ *
++ * Darwin's bridge hands back an `NSData` that answers `-bytes` out of the Swift
++ * value's own storage, so nothing is copied until somebody mutates a copy. Agora
++ * cannot do that from the Swift side: a Swift subclass of `NSData` registers its
++ * overrides with the *Swift* type encodings (`length` as `q`, not `Q`), and a
++ * Clang-compiled caller's typed send for `Q16@0:8` then misses them — the trap
++ * §2.25 fixed for `BOOL` and §2.21 for `count`. So the view is a class here,
++ * where the header gives the encodings, and the Swift bridge only constructs it.
++ *
++ * The `owner` is whatever keeps `bytes` alive — in the bridge, the boxed Swift
++ * `Data` value, whose storage is the buffer. The view retains it and never
++ * mutates, so the pointer stays valid for the view's lifetime. */
++@interface FNDataView : NSData
++{
++	const void *_viewBytes;
++	NSUInteger _viewLength;
++	NSUInteger _viewOffset;	/* where this view starts inside the owner's bytes */
++	id _owner;
++}
++
++- (instancetype)initWithBytes:(const void *)bytes length:(NSUInteger)length owner:(id)owner;
++- (instancetype)initWithBytes:(const void *)bytes length:(NSUInteger)length owner:(id)owner offset:(NSUInteger)offset;
++
++/* What the inverse bridge adopts: the value whose storage this is, and where this
++ * view sits inside it (a subrange view reports its parent's owner and its own
++ * offset, so the Swift side can slice the value without copying). */
++@property (nonatomic, readonly, strong) id owner;
++@property (nonatomic, readonly) NSUInteger offset;
++@end
++
++
+ @interface NSMutableData : NSData <NSMutableCopying>
+ {
+ 	size_t _capacity;
+diff --git a/NSData.m b/NSData.m
+index 7371d4c..e0850e4 100644
+--- a/NSData.m
++++ b/NSData.m
+@@ -1057,3 +1057,99 @@ static NSString *fn_path_for_url(NSURL *url, NSError **errorPtr)
+  * caller gains is the NAME that -class answers. */
+ 
+ @end
++
++/* ===================================================================================================
++ * FNDataView — see NSData.h for why this is a class here and not a Swift subclass.
++ *
++ * Everything a caller can ask an immutable NSData is answered from the borrowed
++ * pointer; the only allocation is a `-mutableCopy` (which cannot be a view by
++ * definition) and a `-subdataWithRange:` view (which shares the owner).
++ * =================================================================================================== */
++@implementation FNDataView
++
++- (instancetype)initWithBytes:(const void *)bytes length:(NSUInteger)length owner:(id)owner
++{
++	return [self initWithBytes:bytes length:length owner:owner offset:0];
++}
++
++- (instancetype)initWithBytes:(const void *)bytes length:(NSUInteger)length owner:(id)owner offset:(NSUInteger)offset
++{
++	self = [super init];
++	if (self == nil) {
++		return nil;
++	}
++	_viewBytes = bytes;
++	_viewLength = length;
++	_viewOffset = offset;
++	_owner = [owner retain];
++	return self;
++}
++
++- (void)dealloc
++{
++	[_owner release];
++	[super dealloc];
++}
++
++- (id)owner
++{
++	return _owner;
++}
++
++- (NSUInteger)offset
++{
++	return _viewOffset;
++}
++
++- (NSUInteger)length
++{
++	return _viewLength;
++}
++
++- (const void *)bytes
++{
++	return _viewBytes;
++}
++
++- (void)getBytes:(void *)buffer length:(NSUInteger)length
++{
++	if (buffer != NULL && length > 0 && _viewBytes != NULL) {
++		memcpy(buffer, _viewBytes, length < _viewLength ? length : _viewLength);
++	}
++}
++
++- (void)getBytes:(void *)buffer range:(NSRange)range
++{
++	NSUInteger start = range.location < _viewLength ? range.location : _viewLength;
++	NSUInteger count = range.length < (_viewLength - start) ? range.length : (_viewLength - start);
++
++	if (buffer != NULL && count > 0 && _viewBytes != NULL) {
++		memcpy(buffer, (const unsigned char *)_viewBytes + start, count);
++	}
++}
++
++/* A subrange is a view too: the same owner, a pointer further in. FoundationEssentials'
++ * `Data` slices share their parent's storage, so this costs nothing either. */
++- (NSData *)subdataWithRange:(NSRange)range
++{
++	NSUInteger start = range.location < _viewLength ? range.location : _viewLength;
++	NSUInteger count = range.length < (_viewLength - start) ? range.length : (_viewLength - start);
++	const unsigned char *base = (const unsigned char *)_viewBytes;
++
++	return [[[FNDataView alloc] initWithBytes:(base != NULL ? base + start : NULL)
++					  length:count
++					   owner:_owner
++					  offset:_viewOffset + start] autorelease];
++}
++
++- (id)copy
++{
++	return [self retain];	/* immutable: `copy` is an OWNED family, and this one is itself */
++}
++
++- (id)mutableCopy
++{
++	return [[NSMutableData alloc] initWithBytes:_viewBytes length:_viewLength];
++}
++
++@end

@@ -96,7 +96,11 @@ mkdir -p "$OUT/Foundation.swiftmodule" "$SP/lib" "$BUILD/bin"
 echo "== building the P3 Foundation module =="
 echo "   sources: $SRCDIR"
 echo "   FE/FI  : $SP"
+# `-validate-tbd-against-ir=none`: the module declares an Objective-C class
+# (`__NSSwiftData`, the Data view), and the TBD check does not count class symbols
+# the module itself defines.  The same switch the FoundationEssentials build uses.
 "$SWIFTC" -module-name Foundation -import-underlying-module -enable-testing \
+  -Xfrontend -validate-tbd-against-ir=none \
   -emit-module -emit-module-path "$OUT/Foundation.swiftmodule/$HOST_TARGET.swiftmodule" \
   -emit-library -module-link-name Foundation \
   -o "$OUT/libFoundation.so" \

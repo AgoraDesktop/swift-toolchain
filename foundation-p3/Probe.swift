@@ -48,6 +48,42 @@ expect(nsData.length == 11, "Data -> NSData length")
 expect((nsData as Data) == greetingData, "NSData -> Data")
 expect((nsData as? Data) == greetingData, "NSData -> Data (as?)")
 
+// MARK: - the Data bridge is a *view*, not a copy
+
+// The address `Data` hands out and the address its `NSData` view reports are the
+// same: nothing was copied.  More than 14 bytes, so FoundationEssentials keeps the
+// bytes out of line (its inline representation is what the holder copies).
+let bigBytes = Data((0..<64).map { UInt8($0) })
+let bigDataAddress = bigBytes.withUnsafeBytes { $0.baseAddress }
+let bigView: NSData = bigBytes as NSData
+expect(bigDataAddress == bigView.bytes, "Data -> NSData is a view (same address)")
+expect(bigView.length == 64, "the view reports the length")
+expect((bigView as Data) == bigBytes, "the view bridges back to the same value")
+
+// And the inverse direction adopts the view: the value that comes back is the one
+// the view was built from, so its bytes have not moved either.
+let roundTripped = bigView as Data
+expect(roundTripped.withUnsafeBytes { $0.baseAddress } == bigDataAddress,
+       "NSData -> Data adopts the view (same address)")
+
+// A small Data is kept inline by FoundationEssentials, where a pointer is only
+// valid inside `withUnsafeBytes`; the holder owns a copy for it, so `-bytes` is
+// stable — the length and the bytes still have to be right.
+let smallBytes = Data([1, 2, 3])
+let smallView: NSData = smallBytes as NSData
+expect(smallView.length == 3, "small view length")
+expect(smallView.bytes.map { Array(UnsafeRawBufferPointer(start: $0, count: 3)) } == [1, 2, 3],
+       "small view bytes")
+expect((smallView as Data) == smallBytes, "small view bridges back")
+
+// Copies keep the contract: `-copy` is self (immutable), `-mutableCopy` is a real
+// mutable copy, and a subrange is still a view of the same storage.
+expect((bigView.copy() as? NSData) === bigView, "NSData view copies to itself")
+let mutableCopy = bigView.mutableCopy() as? NSMutableData
+expect(mutableCopy?.length == 64, "mutableCopy is a real NSMutableData")
+let sub = bigView.subdata(with: NSRange(location: 8, length: 8))
+expect(sub.length == 8 && (sub as Data) == bigBytes[8..<16], "subdata is the right slice")
+
 // MARK: - Date <-> NSDate
 
 let nsDate: NSDate = epoch as NSDate
