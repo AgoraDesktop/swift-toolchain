@@ -1,0 +1,48 @@
+diff --git a/Sources/FoundationEssentials/Bundle+Stub.swift b/Sources/FoundationEssentials/Bundle+Stub.swift
+index b64159f..ab4dbbf 100644
+--- a/Sources/FoundationEssentials/Bundle+Stub.swift
++++ b/Sources/FoundationEssentials/Bundle+Stub.swift
+@@ -10,10 +10,19 @@
+ //
+ //===----------------------------------------------------------------------===//
+ 
++// This is the stand-in for a *bundle* on platforms whose Foundation has no
++// Objective-C Foundation, and FoundationInternationalization is its only user.
++//
++// It is NOT named `Bundle`: on a platform that does have one, `NSBundle` imports
++// into Swift as `Bundle`, and two declarations of that name make every
++// `Bundle`-naming file ambiguous as soon as `@testable import FoundationEssentials`
++// is in scope (the ported test suites do exactly that).  Agora is such a platform:
++// its Clang Foundation supplies `Bundle`, this stub supplies the localizations
++// FoundationInternationalization needs, and the two live under different names.
+ #if !FOUNDATION_FRAMEWORK
+ 
+-package struct Bundle: Hashable, Equatable, Sendable {
+-    public static let main: Bundle = Bundle()
++package struct FoundationBundle: Hashable, Equatable, Sendable {
++    public static let main: FoundationBundle = FoundationBundle()
+ 
+     public var localizations: [String] { return [] }
+ 
+diff --git a/Sources/FoundationInternationalization/Locale/Locale_ICU.swift b/Sources/FoundationInternationalization/Locale/Locale_ICU.swift
+index 0707881..418ddea 100644
+--- a/Sources/FoundationInternationalization/Locale/Locale_ICU.swift
++++ b/Sources/FoundationInternationalization/Locale/Locale_ICU.swift
+@@ -227,7 +227,7 @@ internal final class _LocaleICU: _LocaleProtocol, Sendable {
+             var canonicalizedLocalizations: [String]?
+ 
+             if let preferredLocale, let preferredLanguages, performBundleMatching {
+-                let mainBundle = Bundle.main
++                let mainBundle = FoundationBundle.main
+                 let availableLocalizations = mainBundle.localizations
+                 canonicalizedLocalizations = Locale.canonicalizeLocalizations(availableLocalizations)
+ 
+@@ -1728,7 +1728,7 @@ extension Locale {
+         let canonicalizedPreferredLanguages = canonicalizeLocalizations(preferredLanguages)
+ 
+         // Combine `canonicalizedLocalizations` with `canonicalizedPreferredLanguages` to get `preferredLocalizations`. `[0]` indicates the localization that the app is currently launched in.
+-        let preferredLocalizations = Bundle.preferredLocalizations(from: canonicalizedLocalizations, forPreferences: canonicalizedPreferredLanguages)
++        let preferredLocalizations = FoundationBundle.preferredLocalizations(from: canonicalizedLocalizations, forPreferences: canonicalizedPreferredLanguages)
+ 
+         guard preferredLocalizations.count > 0 else { return nil }
+ 

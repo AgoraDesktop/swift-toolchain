@@ -174,12 +174,13 @@ EOF
 COMMON=(
   -I "$TB/swift" -L "$TB/lib"
   -lTesting -l_TestingInterop -l_TestDiscovery -l_TestingInternals
-  # `import Foundation` here is the *spike's* re-export (FE + FI, no Clang
-  # Foundation).  The shipped P3 `Foundation` re-exports Agora's Clang module as
-  # well, and FoundationEssentials' package `Bundle` stub then collides with
-  # Agora's `NSBundle` (which imports as `Bundle`) under `@testable import.
-  -I "$SP/reexport/swift" -I "$SP/swift"
-  -L "$SP/reexport/lib" -L "$SP/lib"
+  # `import Foundation` is the *installed* module (build-foundation-p3.sh
+  # --install): FE + FI + the bridges, over Agora's Clang Foundation.  That is
+  # what the suites are meant to test - the Foundation the toolchain ships - and
+  # `-I "$SP/swift"` is here so `@testable import FoundationEssentials` can pick
+  # the build-tree module even when the installed copy is stale.
+  -I "$SP/swift"
+  -L "$SP/lib"
   # FoundationInternationalization *first*: it provides the concrete
   # `_icuStringEncodingConvert`, which FoundationEssentials declares `dynamic`
   # with a nil stub.  ELF symbol interposition takes the first definition in the

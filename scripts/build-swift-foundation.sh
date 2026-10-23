@@ -5,7 +5,15 @@
 #
 #   swift-toolchain/scripts/build-swift-foundation.sh --configure [--testing]
 #   swift-toolchain/scripts/build-swift-foundation.sh --build [target ...]
+#   swift-toolchain/scripts/build-swift-foundation.sh --apply-patches
 #   swift-toolchain/scripts/build-swift-foundation.sh --logs
+#
+# `--apply-patches` applies `patches/0016-swift-foundation-bundle-stub-name.patch`
+# (idempotent: `git apply --check` first).  It is needed before a build on a fresh
+# checkout, and it is what makes `import Foundation` unambiguous: FoundationEssentials'
+# stand-in bundle type is named `FoundationBundle` there, so it cannot collide with
+# an Objective-C Foundation's `Bundle` — Agora's `NSBundle` imports under that name.
+# See SWIFT-PORT-HANDOFF.md §2.35.
 #
 # This is a SPIKE build, not the shipped arrangement: the modules land in a
 # private tree (AGORA_FOUNDATION_BUILD_DIR), they are not installed next to the
@@ -117,7 +125,7 @@ testing_build=0
 for arg in "$@"; do
   case "$arg" in
     --testing)               testing_build=1 ;;
-    --configure|--build|--logs) action="$arg" ;;
+    --apply-patches|--configure|--build|--logs) action="$arg" ;;
     -*)                      echo "unknown option: $arg" >&2; exit 2 ;;
     *)                       targets+=("$arg") ;;
   esac
@@ -127,7 +135,25 @@ if (( testing_build )); then
   INSTALL="$BUILD/install"
 fi
 
+apply_patches() {
+  local patch
+  for patch in "$AGORA_ROOT"/swift-toolchain/patches/0016-swift-foundation-*.patch; do
+    [[ -f "$patch" ]] || continue
+    echo "== $(basename "$patch") =="
+    if git -C "$SOURCE" apply --check "$patch" 2>/dev/null; then
+      git -C "$SOURCE" apply "$patch"
+      echo "  [ok] applied"
+    elif git -C "$SOURCE" apply --reverse --check "$patch" 2>/dev/null; then
+      echo "  [ok] already applied"
+    else
+      echo "  [FAIL] neither applies nor is applied; the checkout has moved" >&2
+      exit 1
+    fi
+  done
+}
+
 case "$action" in
+  --apply-patches) apply_patches ;;
   --configure) configure ;;
   --build)     build "${targets[@]:-FoundationEssentials}" ;;
   --logs)      grep -nE 'error:|undefined reference|fatal error' "$BUILD"/*.log | head -60 ;;
