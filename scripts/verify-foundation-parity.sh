@@ -103,6 +103,8 @@ LD_LIBRARY_PATH="$OUR_HOST_RUNTIME:$AGORA_PREFIX/lib" \
   -Xcc -fmodule-map-file="$MODULE_MAP" \
   -Xcc -I"$AGORA_PREFIX/include" \
   -Xcc -Wno-incomplete-umbrella \
+  -Xcc -I"$OUR_SWIFTLIB/foundation-c-modules/FoundationCShims" \
+  -Xcc -I"$OUR_SWIFTLIB/foundation-c-modules/FoundationICU" \
   -module-cache-path "$AGORA_PARITY_DIR/module-cache-ours" \
   -output-dir "$AGORA_PARITY_DIR/ours"
 
