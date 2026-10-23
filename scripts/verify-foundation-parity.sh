@@ -73,7 +73,7 @@ if [[ "$MODE" == --check || "$MODE" == --update-allowlist ]]; then
   fi
 fi
 
-rm -rf "$AGORA_PARITY_DIR"
+if [[ "${KEEP:-0}" != "1" ]]; then rm -rf "$AGORA_PARITY_DIR"; fi
 mkdir -p "$AGORA_PARITY_DIR/reference" "$AGORA_PARITY_DIR/ours" \
          "$AGORA_PARITY_DIR/module-cache-reference" \
          "$AGORA_PARITY_DIR/module-cache-ours"

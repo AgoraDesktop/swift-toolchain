@@ -1,0 +1,64 @@
+diff --git a/NSOperation.m b/NSOperation.m
+index 18a5dc4..dee731c 100644
+--- a/NSOperation.m
++++ b/NSOperation.m
+@@ -435,10 +435,27 @@ const NSInteger NSOperationQueueDefaultMaxConcurrentOperationCount = -1;
+ 
+ - (void)setName:(nullable NSString *)name
+ {
+-	_name = name;
++	/* COPIED, for the reason NSThread's is (Cocoa's `name` property is a copy):
++	 * the queue owns the string it reports, and -dealloc below releases it. */
++	NSString *copied = [name copy];
++	[_name release];
++	_name = copied;
+ }
+ 
+ 
++- (void)dealloc
++{
++	/* THE QUEUE OWNS WHAT -init AND -setName: GAVE IT, and until now it released
++	 * none of it: three objects per queue leaked, plus the name this setter copies.
++	 * (The singleton from +mainQueue is never released, so its dealloc does not run;
++	 * every other queue's does.) */
++	[_name release];
++	[_operations release];
++	[_pending release];
++	[_condition release];
++	[super dealloc];
++}
++
+ - (void)addOperationWithBlock:(void (^)(void))block
+ {
+ 	FNBlockOperation *operation;
+diff --git a/NSThread.m b/NSThread.m
+index 375aae1..7600009 100644
+--- a/NSThread.m
++++ b/NSThread.m
+@@ -135,7 +135,14 @@ static void *fn_thread_entry(void *context)
+ 
+ - (void)setName:(nullable NSString *)name
+ {
+-	_name = name;
++	/* COPIED, which is what Cocoa's `name` property is (a mutable string handed in
++	 * must not be able to change the thread's name behind its back).  The old value
++	 * is released and the new one is owned here, so -dealloc below is the pair that
++	 * closes it: this ivar used to be borrowed, which dangled as soon as the
++	 * caller's string went away. */
++	NSString *copied = [name copy];
++	[_name release];
++	_name = copied;
+ }
+ 
+ - (BOOL)isCancelled
+@@ -213,7 +220,9 @@ static void *fn_thread_entry(void *context)
+ 
+ - (void)dealloc
+ {
+-	/* ONLY WHAT THIS CLASS OWNS: nothing else in this file retains an ivar. */
++	/* ONLY WHAT THIS CLASS OWNS: nothing else in this file retains an ivar - and
++	 * the name does now, since -setName: copies it. */
++	[_name release];
+ 	Block_release(_block);
+ 	[super dealloc];
+ }
