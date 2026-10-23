@@ -2290,7 +2290,7 @@ index b6c69353..b6214405 100644
  }
  
 diff --git a/lib/IRGen/GenObjC.cpp b/lib/IRGen/GenObjC.cpp
-index e60b660a..f808b034 100644
+index e60b660a..b897d9ab 100644
 --- a/lib/IRGen/GenObjC.cpp
 +++ b/lib/IRGen/GenObjC.cpp
 @@ -284,11 +284,32 @@ llvm::Constant *IRGenModule::getAddrOfObjCMethodName(StringRef selector) {
@@ -2614,7 +2614,83 @@ index e60b660a..f808b034 100644
    }
  
    // Parameter types.
-@@ -1423,6 +1593,7 @@ irgen::emitObjCMethodDescriptorParts(IRGenModule &IGM,
+@@ -1364,9 +1534,75 @@ static llvm::Constant *getObjCEncodingForTypes(IRGenModule &IGM,
+                                    CStringSectionType::ObjCMethodType);
+ }
+ 
++/// The Clang declaration a Swift override of an imported Objective-C method
++/// corresponds to, if any.
++///
++/// A Swift method that overrides an imported one has no `ClangNode` of its own —
++/// the Clang node belongs to the *imported* declaration it overrides — but the
++/// type encoding callers send is the imported method's.  Typed dispatch in
++/// libobjc2 is keyed on (selector, encoding), so a Swift subclass of `NSData`
++/// that overrides `-length` registered `q16@0:8` (the Swift `Int`) while a
++/// Clang-compiled caller sends `Q16@0:8` and the send answered the *superclass*.
++/// Walking the override chain is what lets the encoding come from Clang, where
++/// the parameter types are the encoded ones (`NSUInteger`, `BOOL`, ...).
++static clang::Decl *findInheritedClangDecl(ValueDecl *d) {
++  // An accessor overrides the superclass's accessor through its storage.
++  if (auto *accessor = dyn_cast<AccessorDecl>(d))
++    d = accessor->getStorage();
++
++  auto *overridden = d ? d->getOverriddenDecl() : nullptr;
++  while (overridden) {
++    ClangNode node = overridden->getClangNode();
++    if (node)
++      return const_cast<clang::Decl *>(node.getAsDecl());
++    if (auto *accessor = dyn_cast<AccessorDecl>(overridden))
++      overridden = accessor->getStorage();
++    else
++      overridden = overridden->getOverriddenDecl();
++  }
++  return nullptr;
++}
++
++/// The method encoding of an imported Objective-C property's getter or setter,
++/// for a Swift property that overrides it.
++static std::string getInheritedPropertyEncoding(IRGenModule &IGM,
++                                                VarDecl *property,
++                                                bool isSetter) {
++  auto *inherited = findInheritedClangDecl(property);
++  if (!inherited)
++    return {};
++  auto *propertyDecl = dyn_cast<clang::ObjCPropertyDecl>(inherited);
++  if (!propertyDecl)
++    return {};
++  auto *methodDecl =
++      isSetter ? propertyDecl->getSetterMethodDecl()
++               : propertyDecl->getGetterMethodDecl();
++  if (!methodDecl)
++    return {};
++  return IGM.getClangASTContext().getObjCEncodingForMethodDecl(methodDecl,
++                                                              /*extended*/ false);
++}
++
+ static llvm::Constant *
+ getObjectEncodingFromClangNode(IRGenModule &IGM, Decl *d,
+                                bool useExtendedEncoding) {
++  // A method imported from Objective-C carries its encoding in its Clang node;
++  // a Swift override of one inherits it (see findInheritedClangMethod).
++  clang::Decl *inherited = nullptr;
++  if (!d->getClangNode()) {
++    if (auto *vd = dyn_cast<ValueDecl>(d))
++      inherited = findInheritedClangDecl(vd);
++    if (inherited) {
++      auto &clangASTContext = IGM.getClangASTContext();
++      if (auto *objcMethodDecl = dyn_cast<clang::ObjCMethodDecl>(inherited)) {
++        std::string typeStr = clangASTContext.getObjCEncodingForMethodDecl(
++            objcMethodDecl, useExtendedEncoding);
++        if (!typeStr.empty())
++          return IGM.getAddrOfGlobalString(typeStr.c_str(),
++                                           CStringSectionType::ObjCMethodType);
++      }
++    }
++  }
+   // Use the clang node's encoding if there is a clang node.
+   if (d->getClangNode()) {
+     auto clangDecl = d->getClangNode().castAsDecl();
+@@ -1423,6 +1659,7 @@ irgen::emitObjCMethodDescriptorParts(IRGenModule &IGM,
                                       bool concrete) {
    ObjCMethodDescriptor descriptor{};
    Selector selector(method);
@@ -2622,15 +2698,35 @@ index e60b660a..f808b034 100644
    
    /// The first element is the selector.
    descriptor.selectorRef = IGM.getAddrOfObjCMethodName(selector.str());
-@@ -1461,6 +1632,7 @@ ObjCMethodDescriptor
+@@ -1461,8 +1698,26 @@ ObjCMethodDescriptor
  irgen::emitObjCGetterDescriptorParts(IRGenModule &IGM, VarDecl *property) {
    Selector getterSel(property, Selector::ForGetter);
    ObjCMethodDescriptor descriptor{};
 +  descriptor.selector = getterSel.str();
    descriptor.selectorRef = IGM.getAddrOfObjCMethodName(getterSel.str());
-   
+-  
++
++  // An override of an imported Objective-C property takes the *imported* getter's
++  // encoding, not one derived from the Swift value type: typed dispatch is keyed on
++  // (selector, encoding), and the callers are Clang-compiled.  A Swift override of
++  // `-length` otherwise registered `q16@0:8` against the imported `Q16@0:8` and the
++  // send answered the superclass (handoff §2.39).
++  if (!property->getClangNode()) {
++    std::string inherited = getInheritedPropertyEncoding(IGM, property,
++                                                         /*isSetter*/ false);
++    if (!inherited.empty()) {
++      descriptor.typeEncoding = IGM.getAddrOfGlobalString(
++          inherited.c_str(), CStringSectionType::ObjCMethodType);
++      descriptor.silFunction = nullptr;
++      descriptor.impl = getObjCGetterPointer(IGM, property, descriptor.silFunction);
++      return descriptor;
++    }
++  }
++
    auto clangType = getObjCPropertyType(IGM, property);
-@@ -1494,6 +1666,7 @@ irgen::emitObjCGetterDescriptorParts(IRGenModule &IGM,
+   if (clangType.isNull()) {
+     descriptor.typeEncoding = llvm::ConstantPointerNull::get(IGM.Int8PtrTy);
+@@ -1494,6 +1749,7 @@ irgen::emitObjCGetterDescriptorParts(IRGenModule &IGM,
                                       SubscriptDecl *subscript) {
    Selector getterSel(subscript, Selector::ForGetter);
    ObjCMethodDescriptor descriptor{};
@@ -2638,15 +2734,32 @@ index e60b660a..f808b034 100644
    descriptor.selectorRef = IGM.getAddrOfObjCMethodName(getterSel.str());
  
    auto methodTy =
-@@ -1533,6 +1706,7 @@ irgen::emitObjCSetterDescriptorParts(IRGenModule &IGM,
+@@ -1533,8 +1789,23 @@ irgen::emitObjCSetterDescriptorParts(IRGenModule &IGM,
  
    Selector setterSel(property, Selector::ForSetter);
    ObjCMethodDescriptor descriptor{};
 +  descriptor.selector = setterSel.str();
    descriptor.selectorRef = IGM.getAddrOfObjCMethodName(setterSel.str());
-   
+-  
++
++  // Same rule as the getter below: an override of an imported Objective-C
++  // property takes the imported setter's encoding.
++  if (!property->getClangNode()) {
++    std::string inherited = getInheritedPropertyEncoding(IGM, property,
++                                                         /*isSetter*/ true);
++    if (!inherited.empty()) {
++      descriptor.typeEncoding = IGM.getAddrOfGlobalString(
++          inherited.c_str(), CStringSectionType::ObjCMethodType);
++      descriptor.silFunction = nullptr;
++      descriptor.impl = getObjCSetterPointer(IGM, property, descriptor.silFunction);
++      return descriptor;
++    }
++  }
++
    auto &clangASTContext = IGM.getClangASTContext();
-@@ -1578,6 +1752,7 @@ irgen::emitObjCSetterDescriptorParts(IRGenModule &IGM,
+   std::string TypeStr;
+   auto clangType = clangASTContext.VoidTy;
+@@ -1578,6 +1849,7 @@ irgen::emitObjCSetterDescriptorParts(IRGenModule &IGM,
  
    Selector setterSel(subscript, Selector::ForSetter);
    ObjCMethodDescriptor descriptor{};

@@ -174,6 +174,55 @@ else
   echo "  [skip] swift-interop-probe/agora-modules/module.modulemap not present"
 fi
 
+say "a Swift subclass of an Objective-C class reaches its overrides"
+# Typed dispatch in libobjc2 is keyed on (selector, encoding), and the callers here
+# are Clang-compiled — so a Swift override must carry the *imported* encoding, not
+# one derived from the Swift type.  `-length` is `NSUInteger` (`Q16@0:8`) while
+# Swift's `Int` is `q16@0:8`: without the fix, `NSMutableData(data: view)` read the
+# superclass's length (0) instead of the override's.
+if [[ -f "$PROBE_MODULEMAP" ]]; then
+  cat > "$WORKDIR/objcoverride.swift" <<'EOF'
+import Foundation
+
+final class ByteView: NSData {
+  private let _storage: UnsafeMutableRawPointer
+  private let _count: Int
+
+  init(bytes: UnsafeRawPointer, count: Int) {
+    _count = count
+    _storage = UnsafeMutableRawPointer.allocate(byteCount: max(count, 1), alignment: 1)
+    if count > 0 { _storage.copyMemory(from: bytes, byteCount: count) }
+    super.init(bytes: nil, length: 0)
+  }
+
+  required init?(coder: NSCoder) { fatalError("not archivable") }
+
+  override var length: Int { _count }
+  override var bytes: UnsafeRawPointer? { UnsafeRawPointer(_storage) }
+
+  deinit { _storage.deallocate() }
+}
+
+let source = Data([10, 20, 30, 40])
+let view = source.withUnsafeBytes { ByteView(bytes: $0.baseAddress!, count: $0.count) }
+
+precondition(view.length == 4, "the Swift override answers from Swift")
+// The interesting part: Agora's `-initWithData:` is Clang-compiled and sends
+// `-length`/`-bytes` with the imported encodings.
+let copy = NSMutableData(data: view)
+precondition(copy.length == 4, "Objective-C reached the override's length (got \(copy.length))")
+precondition((copy as Data) == source, "Objective-C reached the override's bytes")
+print("override encodings: ok")
+EOF
+  check "a Swift subclass's property overrides are reached from Objective-C" \
+    build_and_run "$WORKDIR/objcoverride.swift" "$WORKDIR/objcoverride" \
+      -Xcc -fmodule-map-file="$PROBE_MODULEMAP" \
+      -Xcc -I"$AGORA_INCDIR" \
+      -Xcc -Wno-incomplete-umbrella \
+      -lagora-base -lagora-core -lagora-dispatch -lobjc -lBlocksRuntime \
+      -Xlinker -rpath -Xlinker "$AGORA_LIBDIR"
+fi
+
 say "Swift <-> Agora Foundation bridging"
 # The value bridges live in the Foundation overlay the toolchain installs
 # (swift-toolchain/foundation-overlay).  It is part of an *installed* toolchain;
